@@ -225,7 +225,7 @@ def analyze_duplicates_for_file(db: Session, file_id: int, min_amount: float) ->
                 # фильтруем по порогу, если нужно
                 filtered = [
                     r for r in items
-                    if (r.payout is None or r.payout >= min_amount)
+                    if (r.payout is not None and r.payout >= min_amount)
                 ]
                 if len(filtered) >= 2:
                     hard_duplicates.append({
@@ -350,13 +350,56 @@ async def upload_file(
         order_number = extract_order_number(text_cell)
         address = extract_address(text_cell)
 
-        # payout
+                # payout из колонки "Итого" или "Сумма оплаты от услуг"
         payout_val = None
-        if payout_col and not pd.isna(row.get(payout_col)):
+        if payout_col is not None:
+            raw = row.get(payout_col)
+            if pd.notna(raw):
+                try:
+                    if isinstance(raw, str):
+                        # убираем пробелы и меняем запятую на точку
+                        cleaned = raw.replace(" ", "").replace(",", ".")
+                        payout_val = float(cleaned)
+                    else:
+                        payout_val = float(raw)
+                except Exception:
+                    payout_val = None
+        # Определяем суммы по диагностике и выезду
+        diag_sum = 0.0
+        if diagnostic_col and pd.notna(row.get(diagnostic_col)):
             try:
-                payout_val = float(row.get(payout_col))
+                diag_sum = float(str(row.get(diagnostic_col)).replace(" ", "").replace(",", "."))
             except Exception:
-                payout_val = None
+                diag_sum = 0.0
+
+        insp_sum = 0.0
+        if inspection_col and pd.notna(row.get(inspection_col)):
+            try:
+                insp_sum = float(str(row.get(inspection_col)).replace(" ", "").replace(",", "."))
+            except Exception:
+                insp_sum = 0.0
+
+        # Определяем тип работы
+        if diag_sum > 0:
+            work_type = "diagnostic"
+        elif insp_sum > 0:
+            work_type = "inspection"
+        elif payout_val is not None and payout_val > 5000:
+            work_type = "installation"
+        else:
+            work_type = "other"
+
+          # Колонки для диагностики и выезда
+        diagnostic_col = next(
+        (c for c in df.columns if "диагност" in str(c).lower()),
+        None,
+    )
+
+    inspection_col = next(
+        (c for c in df.columns if "выручка (выезд) специалиста" in str(c).lower()
+         or "выезд специалиста" in str(c).lower()),
+        None,
+    )
 
         worker_name = (
             str(row.get(worker_col))
