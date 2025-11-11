@@ -148,11 +148,10 @@ def row_short(r: OrderRow) -> dict:
         "work_type": r.work_type,
     }
 
-
 def analyze_duplicates_for_file(db: Session, file_id: int) -> dict:
     """
     - Кластеры по (order_number + address)
-    - Жесткие дубли: совпали order_number + address + work_type (payout >= min_amount)
+    - Жесткие дубли: совпали order_number + address + work_type (2+ строк)
     - Комбо: внутри кластера есть diagnostic/inspection + installation
     Анализ по всей базе (чтобы видеть дубли между файлами).
     """
@@ -189,19 +188,18 @@ def analyze_duplicates_for_file(db: Session, file_id: int) -> dict:
             by_type[r.work_type].append(r)
             if r.work_type in ("diagnostic", "inspection"):
                 has_diag_or_insp = True
-            if r.work_type == "installation"
+            if r.work_type == "installation":
                 has_install = True
 
-        # Жесткие дубли: по одному work_type есть 2+ записей с payout >= min_amount
+        # Жесткие дубли: по одному work_type есть 2+ записей
         for wt, items in by_type.items():
             if len(items) >= 2:
-                if len(filtered) >= 2:
-                    hard_duplicates.append({
-                        "order_number": order_number,
-                        "address": address,
-                        "work_type": wt,
-                        "rows": [row_short(r) for r in filtered],
-                    })
+                hard_duplicates.append({
+                    "order_number": order_number,
+                    "address": address,
+                    "work_type": wt,
+                    "rows": [row_short(r) for r in items],
+                })
 
         # Комбо: есть диагностика/осмотр + монтаж
         if has_diag_or_insp and has_install:
@@ -218,7 +216,6 @@ def analyze_duplicates_for_file(db: Session, file_id: int) -> dict:
         "hard_duplicates_sample": hard_duplicates[:30],
         "combo_clusters_sample": combo_clusters[:30],
     }
-
 
 # ========== Эндпоинты ==========
 
