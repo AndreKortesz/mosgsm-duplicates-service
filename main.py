@@ -102,15 +102,23 @@ def extract_address(text: str) -> str | None:
     """
     Черновой вариант:
     - Ищем 'от ДД.ММ.ГГГГ' и берём всё после первой запятой.
+    - Режем хвост с числами и 'nan', чтобы не тянуть финансы в адрес.
     - Если не нашли — возвращаем None (уйдет в проблемные).
     """
     if not text:
         return None
 
     m = re.search(r"от\s+\d{2}\.\d{2}\.\d{4}[^,]*,(.+)$", text)
-    if m:
-        return m.group(1).strip()
-    return None
+    if not m:
+        return None
+
+    address = m.group(1)
+
+    # обрезаем всё, что похоже на числовые хвосты или nan/NaN и т.п.
+    address = re.split(r"\bnan\b|\bNaN\b|\d{3,}", address)[0]
+
+    address = address.strip(",. \n\t")
+    return address or None
 
 
 def is_template_row(row: dict) -> bool:
@@ -233,45 +241,42 @@ async def upload_file(
 ):
     """
     1. Читаем Excel.
-    2. Создаем запись о файле.
-    3. Разбираем строки и сохраняем в orders.
-    4. Считаем дубли и комбинированные кейсы.
+    2. Находим строку с заголовками (Монтажник и пр.).
+    3. Читаем данные с этой строки как header.
+    4. Создаем запись о файле.
+    5. Разбираем строки и сохраняем в orders.
+    6. Считаем дубли и комбинированные кейсы.
     """
     content = await file.read()
 
-    # 1) Читаем без заголовков — под твой формат
+    # --- Чтение Excel с поиском строки заголовков ---
     try:
-        raw_df = pd.read_excel(io.BytesIO(content), header=None)
+        xls = pd.ExcelFile(io.BytesIO(content))
+        sheet_name = xls.sheet_names[0]
+
+        temp_df = pd.read_excel(xls, sheet_name=sheet_name, header=None)
+
+        header_row_idx = None
+        for i, row in temp_df.iterrows():
+            first_cell = str(row.iloc[0]).strip().lower()
+            # ориентир: строка, где первый столбец содержит "монтажник"
+            if "монтажник" in first_cell:
+                header_row_idx = i
+                break
+
+        if header_row_idx is None:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Не найдена строка с заголовками (Монтажник)"},
+            )
+
+        df = pd.read_excel(xls, sheet_name=sheet_name, header=header_row_idx)
+
     except Exception as e:
         return JSONResponse(
             status_code=400,
             content={"error": f"Не удалось прочитать Excel: {str(e)}"},
         )
-
-    # 2) Ищем строку, где начинается шапка (ячейка 'Монтажник')
-    header_row_idx = None
-    for i in range(len(raw_df)):
-        first_cell = str(raw_df.iloc[i, 0]).strip().lower()
-        if first_cell == "монтажник":
-            header_row_idx = i
-            break
-
-    if header_row_idx is not None:
-        header = [
-            (str(x).strip() if not pd.isna(x) else "")
-            for x in list(raw_df.iloc[header_row_idx])
-        ]
-        df = raw_df.iloc[header_row_idx + 1 :].copy()
-        df.columns = header
-    else:
-        # fallback — если формат вдруг другой
-        try:
-            df = pd.read_excel(io.BytesIO(content))
-        except Exception as e:
-            return JSONResponse(
-                status_code=400,
-                content={"error": f"Не удалось прочитать Excel (fallback): {str(e)}"},
-            )
 
     # Файл
     db_file = File(filename=file.filename)
@@ -283,18 +288,15 @@ async def upload_file(
     inserted_rows = 0
     problematic_rows = 0
 
-    # Колонка с текстом заказа/адреса
-    if "Монтажник" in df.columns:
-        order_col = "Монтажник"
-    else:
-        possible_order_cols = [c for c in df.columns if "заказ" in str(c).lower()]
-        order_col = possible_order_cols[0] if possible_order_cols else None
+    # Колонка заказа
+    possible_order_cols = [c for c in df.columns if "заказ" in str(c).lower()]
+    order_col = possible_order_cols[0] if possible_order_cols else None
 
     # Колонка выплат: приоритет "Итого", потом "Сумма оплаты от услуг"
     payout_col = None
     for c in df.columns:
         name = str(c).strip().lower()
-        if name == "итого" or name.endswith("итого"):
+        if "итого" in name:
             payout_col = c
             break
     if payout_col is None:
@@ -304,9 +306,8 @@ async def upload_file(
                 payout_col = c
                 break
 
-    # Остальные колонки (резерв под будущее)
     worker_col = next(
-        (c for c in df.columns if "фио" in str(c).lower() or "монтажник фио" in str(c).lower()),
+        (c for c in df.columns if "фио" in str(c).lower() or "монтажник" in str(c).lower()),
         None,
     )
     name_col = next(
@@ -318,7 +319,7 @@ async def upload_file(
         None,
     )
 
-    # Колонки для диагностик и выезда
+    # Колонки для диагностики и выезда
     diagnostic_col = next(
         (c for c in df.columns if "диагност" in str(c).lower()),
         None,
@@ -333,17 +334,10 @@ async def upload_file(
         total_rows += 1
         row_dict = row.to_dict()
 
-        # Пропускаем явные служебные строки в колонке заказа
-        base_cell = ""
-        if order_col and row.get(order_col) is not None:
-            base_cell = str(row.get(order_col)).strip().lower()
-        if base_cell in ("монтажник", "заказ, комментарий") or "оплата клиентом" in base_cell:
-            continue
-
         if is_template_row(row_dict):
             continue
 
-        # Текст для парсинга номера и адреса
+        # Базовый текст для парсинга номера и адреса
         if order_col and row.get(order_col) is not None:
             text_cell = str(row.get(order_col))
         else:
@@ -396,14 +390,13 @@ async def upload_file(
             if worker_col and pd.notna(row.get(worker_col))
             else None
         )
-
         comment_value = (
             str(row.get(comment_col))
             if comment_col and pd.notna(row.get(comment_col))
             else ""
         )
 
-        # Проблемная строка: нет и номера, и адреса
+        # Проблемная строка: нет и номера, и адреса (кроме шаблонов, их уже отсекли)
         is_problematic = False
         parsed_ok = True
         if not order_number and not address:
