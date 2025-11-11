@@ -4,7 +4,7 @@ import re
 from datetime import datetime
 
 import pandas as pd
-from fastapi import FastAPI, UploadFile, File, Form, Depends
+from fastapi import FastAPI, UploadFile, File as FastAPIFile, Form, Depends
 from fastapi.responses import JSONResponse
 from sqlalchemy import (
     create_engine,
@@ -166,7 +166,7 @@ def ping():
 
 @app.post("/upload")
 async def upload_file(
-    file: UploadFile = File(...),
+    file: UploadFile = FastAPIFile(...),
     min_amount: float = Form(4500),
     db: Session = Depends(get_db),
 ):
@@ -201,10 +201,24 @@ async def upload_file(
     possible_order_cols = [c for c in df.columns if "заказ" in str(c).lower()]
     order_col = possible_order_cols[0] if possible_order_cols else None
 
-    payout_col = next(
-        (c for c in df.columns if "сумма оплаты от услуг" in str(c).lower()),
-        None,
-    )
+    # Определяем колонку с выплатой
+payout_col = None
+
+# 1. Приоритет — колонка "Итого"
+for c in df.columns:
+    name = str(c).strip().lower()
+    if "итого" in name:
+        payout_col = c
+        break
+
+# 2. Если "Итого" не нашли — пробуем "Сумма оплаты от услуг"
+if payout_col is None:
+    for c in df.columns:
+        name = str(c).strip().lower()
+        if "сумма оплаты от услуг" in name:
+            payout_col = c
+            break
+
     worker_col = next(
         (c for c in df.columns if "фио" in str(c).lower() or "монтажник" in str(c).lower()),
         None,
