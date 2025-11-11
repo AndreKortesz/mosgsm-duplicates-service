@@ -196,12 +196,12 @@ async def upload_file(
     inserted_rows = 0
     problematic_rows = 0
 
-    # Пытаемся угадать названия колонок
-    # Эти имена подстрой под свой реальный файл при необходимости
-    possible_order_cols = [c for c in df.columns if "заказ" in str(c).lower()]
-    order_col = possible_order_cols[0] if possible_order_cols else None
+# Пытаемся угадать названия колонок
+# Эти имена подстрой под свой реальный файл при необходимости
+possible_order_cols = [c for c in df.columns if "заказ" in str(c).lower()]
+order_col = possible_order_cols[0] if possible_order_cols else None
 
-    # Определяем колонку с выплатой
+# Определяем колонку с выплатой
 payout_col = None
 
 # 1. Приоритет — колонка "Итого"
@@ -219,18 +219,21 @@ if payout_col is None:
             payout_col = c
             break
 
-    worker_col = next(
-        (c for c in df.columns if "фио" in str(c).lower() or "монтажник" in str(c).lower()),
-        None,
-    )
-    name_col = next(
-        (c for c in df.columns if "наименование" in str(c).lower() or "вид работ" in str(c).lower()),
-        None,
-    )
-    comment_col = next(
-        (c for c in df.columns if "коммент" in str(c).lower()),
-        None,
-    )
+# Остальные колонки определяем независимо
+worker_col = next(
+    (c for c in df.columns if "фио" in str(c).lower() or "монтажник" in str(c).lower()),
+    None,
+)
+
+name_col = next(
+    (c for c in df.columns if "наименование" in str(c).lower() or "вид работ" in str(c).lower()),
+    None,
+)
+
+comment_col = next(
+    (c for c in df.columns if "коммент" in str(c).lower()),
+    None,
+)
 
     for _, row in df.iterrows():
         total_rows += 1
