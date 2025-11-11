@@ -5,7 +5,7 @@ from datetime import datetime
 from collections import defaultdict
 
 import pandas as pd
-from fastapi import FastAPI, UploadFile, File as FastAPIFile, Form, Depends
+from fastapi import FastAPI, UploadFile, File as FastAPIFile, Depends
 from fastapi.responses import JSONResponse
 from sqlalchemy import (
     create_engine,
@@ -148,6 +148,7 @@ def row_short(r: OrderRow) -> dict:
         "work_type": r.work_type,
     }
 
+
 def analyze_duplicates_for_file(db: Session, file_id: int) -> dict:
     """
     - Кластеры по (order_number + address)
@@ -217,6 +218,7 @@ def analyze_duplicates_for_file(db: Session, file_id: int) -> dict:
         "combo_clusters_sample": combo_clusters[:30],
     }
 
+
 # ========== Эндпоинты ==========
 
 @app.get("/ping")
@@ -237,13 +239,39 @@ async def upload_file(
     """
     content = await file.read()
 
+    # 1) Читаем без заголовков — под твой формат
     try:
-        df = pd.read_excel(io.BytesIO(content))
+        raw_df = pd.read_excel(io.BytesIO(content), header=None)
     except Exception as e:
         return JSONResponse(
             status_code=400,
             content={"error": f"Не удалось прочитать Excel: {str(e)}"},
         )
+
+    # 2) Ищем строку, где начинается шапка (ячейка 'Монтажник')
+    header_row_idx = None
+    for i in range(len(raw_df)):
+        first_cell = str(raw_df.iloc[i, 0]).strip().lower()
+        if first_cell == "монтажник":
+            header_row_idx = i
+            break
+
+    if header_row_idx is not None:
+        header = [
+            (str(x).strip() if not pd.isna(x) else "")
+            for x in list(raw_df.iloc[header_row_idx])
+        ]
+        df = raw_df.iloc[header_row_idx + 1 :].copy()
+        df.columns = header
+    else:
+        # fallback — если формат вдруг другой
+        try:
+            df = pd.read_excel(io.BytesIO(content))
+        except Exception as e:
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"Не удалось прочитать Excel (fallback): {str(e)}"},
+            )
 
     # Файл
     db_file = File(filename=file.filename)
@@ -255,15 +283,18 @@ async def upload_file(
     inserted_rows = 0
     problematic_rows = 0
 
-    # Колонка заказа
-    possible_order_cols = [c for c in df.columns if "заказ" in str(c).lower()]
-    order_col = possible_order_cols[0] if possible_order_cols else None
+    # Колонка с текстом заказа/адреса
+    if "Монтажник" in df.columns:
+        order_col = "Монтажник"
+    else:
+        possible_order_cols = [c for c in df.columns if "заказ" in str(c).lower()]
+        order_col = possible_order_cols[0] if possible_order_cols else None
 
     # Колонка выплат: приоритет "Итого", потом "Сумма оплаты от услуг"
     payout_col = None
     for c in df.columns:
         name = str(c).strip().lower()
-        if "итого" in name:
+        if name == "итого" or name.endswith("итого"):
             payout_col = c
             break
     if payout_col is None:
@@ -273,8 +304,9 @@ async def upload_file(
                 payout_col = c
                 break
 
+    # Остальные колонки (резерв под будущее)
     worker_col = next(
-        (c for c in df.columns if "фио" in str(c).lower() or "монтажник" in str(c).lower()),
+        (c for c in df.columns if "фио" in str(c).lower() or "монтажник фио" in str(c).lower()),
         None,
     )
     name_col = next(
@@ -286,7 +318,7 @@ async def upload_file(
         None,
     )
 
-    # Колонки для диагностики и выезда
+    # Колонки для диагностик и выезда
     diagnostic_col = next(
         (c for c in df.columns if "диагност" in str(c).lower()),
         None,
@@ -301,10 +333,17 @@ async def upload_file(
         total_rows += 1
         row_dict = row.to_dict()
 
+        # Пропускаем явные служебные строки в колонке заказа
+        base_cell = ""
+        if order_col and row.get(order_col) is not None:
+            base_cell = str(row.get(order_col)).strip().lower()
+        if base_cell in ("монтажник", "заказ, комментарий") or "оплата клиентом" in base_cell:
+            continue
+
         if is_template_row(row_dict):
             continue
 
-        # Базовый текст для парсинга номера и адреса
+        # Текст для парсинга номера и адреса
         if order_col and row.get(order_col) is not None:
             text_cell = str(row.get(order_col))
         else:
@@ -357,13 +396,14 @@ async def upload_file(
             if worker_col and pd.notna(row.get(worker_col))
             else None
         )
+
         comment_value = (
             str(row.get(comment_col))
             if comment_col and pd.notna(row.get(comment_col))
             else ""
         )
 
-        # Проблемная строка: нет и номера, и адреса (кроме шаблонов, их уже отсекли)
+        # Проблемная строка: нет и номера, и адреса
         is_problematic = False
         parsed_ok = True
         if not order_number and not address:
