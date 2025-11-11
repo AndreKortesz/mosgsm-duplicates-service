@@ -156,6 +156,103 @@ def is_template_row(row: dict) -> bool:
 
     return False
 
+from collections import defaultdict
+
+def row_short(r: OrderRow) -> dict:
+    return {
+        "id": r.id,
+        "file_id": r.file_id,
+        "order_number": r.order_number,
+        "address": r.address,
+        "payout": r.payout,
+        "worker_name": r.worker_name,
+        "work_type": r.work_type,
+    }
+
+
+def analyze_duplicates_for_file(db: Session, file_id: int, min_amount: float) -> dict:
+    """
+    Аналитика по нашим правилам:
+    - Кластеры по (order_number + address)
+    - Жесткие дубли: совпали order_number + address + work_type (без учета суммы)
+    - Комбо: внутри кластера есть diagnostic/inspection + installation
+    - Все проверки по всем файлам, но фокус на новом файле тоже есть.
+    """
+
+    # Берем все строки, где есть и номер заказа, и адрес
+    all_orders: list[OrderRow] = (
+        db.query(OrderRow)
+        .filter(
+            OrderRow.order_number.isnot(None),
+            OrderRow.address.isnot(None),
+        )
+        .all()
+    )
+
+    clusters = defaultdict(list)  # ключ: (order_number, address) -> список записей
+    for r in all_orders:
+        key = (r.order_number.strip(), r.address.strip())
+        clusters[key].append(r)
+
+    hard_duplicates = []          # жесткие дубли по правилу (order+address+work_type)
+    combo_clusters = []           # кластеры, где есть осмотр/диагностика + монтаж
+    clusters_with_multiple = []   # все кластеры с 2+ записями (для инфо)
+
+    for (order_number, address), rows in clusters.items():
+        if len(rows) < 2:
+            continue  # один рядок — не интересно
+
+        # считаем, что это кластер с несколькими строками
+        clusters_with_multiple.append((order_number, address, rows))
+
+        # группируем по work_type
+        by_type = defaultdict(list)
+        has_diag_or_insp = False
+        has_install = False
+
+        for r in rows:
+            by_type[r.work_type].append(r)
+            if r.work_type in ("diagnostic", "inspection"):
+                has_diag_or_insp = True
+            if r.work_type == "installation":
+                # учитываем только строки выше порога
+                if r.payout is None or r.payout >= min_amount:
+                    has_install = True
+
+        # 1. Жесткие дубли: есть хотя бы один work_type, по которому >=2 записей
+        for wt, items in by_type.items():
+            if len(items) >= 2:
+                # фильтруем по порогу, если нужно
+                filtered = [
+                    r for r in items
+                    if (r.payout is None or r.payout >= min_amount)
+                ]
+                if len(filtered) >= 2:
+                    hard_duplicates.append({
+                        "order_number": order_number,
+                        "address": address,
+                        "work_type": wt,
+                        "rows": [row_short(r) for r in filtered],
+                    })
+
+        # 2. Комбо: есть диагностика/осмотр + монтаж в одном кластере
+        if has_diag_or_insp and has_install:
+            combo_clusters.append({
+                "order_number": order_number,
+                "address": address,
+                "rows": [row_short(r) for r in rows],
+            })
+
+    # Подготовка итогов
+    return {
+        "clusters_with_multiple_count": len(clusters_with_multiple),
+        "hard_duplicates_count": len(hard_duplicates),
+        "combo_clusters_count": len(combo_clusters),
+        # Ограничим выборки, чтобы ответ не раздувать
+        "hard_duplicates_sample": hard_duplicates[:30],
+        "combo_clusters_sample": combo_clusters[:30],
+    }
+
 
 # ========== Эндпоинты ==========
 
