@@ -405,6 +405,9 @@ async def upload_file(
 
     db.commit()
 
+    # Аналитика дублей и комбо по всем данным (включая только что загруженный файл)
+    analysis = analyze_duplicates_for_file(db, db_file.id, min_amount)
+
     return {
         "message": "Файл загружен и обработан",
         "file_id": db_file.id,
@@ -412,5 +415,9 @@ async def upload_file(
         "total_rows_in_file": int(total_rows),
         "saved_rows": int(inserted_rows),
         "problematic_rows": int(problematic_rows),
-        "hint": "Следующий шаг — добавить аналитику дублей и поиск по базе.",
+        "clusters_with_multiple_count": analysis["clusters_with_multiple_count"],
+        "hard_duplicates_count": analysis["hard_duplicates_count"],
+        "combo_clusters_count": analysis["combo_clusters_count"],
+        "hard_duplicates_sample": analysis["hard_duplicates_sample"],
+        "combo_clusters_sample": analysis["combo_clusters_sample"],
     }
