@@ -196,44 +196,44 @@ async def upload_file(
     inserted_rows = 0
     problematic_rows = 0
 
-# Пытаемся угадать названия колонок
-# Эти имена подстрой под свой реальный файл при необходимости
-possible_order_cols = [c for c in df.columns if "заказ" in str(c).lower()]
-order_col = possible_order_cols[0] if possible_order_cols else None
+    # Пытаемся угадать названия колонок
+    # Эти имена подстрой под свой реальный файл при необходимости
+    possible_order_cols = [c for c in df.columns if "заказ" in str(c).lower()]
+    order_col = possible_order_cols[0] if possible_order_cols else None
 
-# Определяем колонку с выплатой
-payout_col = None
+    # Определяем колонку с выплатой
+    payout_col = None
 
-# 1. Приоритет — колонка "Итого"
-for c in df.columns:
-    name = str(c).strip().lower()
-    if "итого" in name:
-        payout_col = c
-        break
-
-# 2. Если "Итого" не нашли — пробуем "Сумма оплаты от услуг"
-if payout_col is None:
+    # 1. Приоритет — колонка "Итого"
     for c in df.columns:
         name = str(c).strip().lower()
-        if "сумма оплаты от услуг" in name:
+        if "итого" in name:
             payout_col = c
             break
 
-# Остальные колонки определяем независимо
-worker_col = next(
-    (c for c in df.columns if "фио" in str(c).lower() or "монтажник" in str(c).lower()),
-    None,
-)
+    # 2. Если "Итого" не нашли — пробуем "Сумма оплаты от услуг"
+    if payout_col is None:
+        for c in df.columns:
+            name = str(c).strip().lower()
+            if "сумма оплаты от услуг" in name:
+                payout_col = c
+                break
 
-name_col = next(
-    (c for c in df.columns if "наименование" in str(c).lower() or "вид работ" in str(c).lower()),
-    None,
-)
+    # Остальные колонки определяем независимо
+    worker_col = next(
+        (c for c in df.columns if "фио" in str(c).lower() or "монтажник" in str(c).lower()),
+        None,
+    )
 
-comment_col = next(
-    (c for c in df.columns if "коммент" in str(c).lower()),
-    None,
-)
+    name_col = next(
+        (c for c in df.columns if "наименование" in str(c).lower() or "вид работ" in str(c).lower()),
+        None,
+    )
+
+    comment_col = next(
+        (c for c in df.columns if "коммент" in str(c).lower()),
+        None,
+    )
 
     for _, row in df.iterrows():
         total_rows += 1
@@ -247,7 +247,7 @@ comment_col = next(
         if order_col and row.get(order_col) is not None:
             text_cell = str(row.get(order_col))
         else:
-            # Если нет отдельной колонки "Заказ", попробуем слить все в одну строку
+            # Если нет отдельной колонки "Заказ", пробуем слить все в одну строку
             text_cell = " ".join([str(v) for v in row_dict.values() if v is not None])
 
         order_number = extract_order_number(text_cell)
@@ -261,9 +261,21 @@ comment_col = next(
             except Exception:
                 payout_val = None
 
-        worker_name = str(row.get(worker_col)) if worker_col and not pd.isna(row.get(worker_col)) else None
-        name_value = str(row.get(name_col)) if name_col and not pd.isna(row.get(name_col)) else ""
-        comment_value = str(row.get(comment_col)) if comment_col and not pd.isna(row.get(comment_col)) else ""
+        worker_name = (
+            str(row.get(worker_col))
+            if worker_col and not pd.isna(row.get(worker_col))
+            else None
+        )
+        name_value = (
+            str(row.get(name_col))
+            if name_col and not pd.isna(row.get(name_col))
+            else ""
+        )
+        comment_value = (
+            str(row.get(comment_col))
+            if comment_col and not pd.isna(row.get(comment_col))
+            else ""
+        )
 
         work_type = detect_work_type(name_value, payout_val)
 
@@ -276,8 +288,6 @@ comment_col = next(
             is_problematic = True
             parsed_ok = False
 
-        # Если запись явно мусорная — можно пропускать, но ты просил видеть все непонятные, кроме шаблонных
-        # поэтому сохраняем проблемные строки тоже.
         order_row = OrderRow(
             file_id=db_file.id,
             raw_text=text_cell,
