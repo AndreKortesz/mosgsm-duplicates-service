@@ -149,7 +149,7 @@ def row_short(r: OrderRow) -> dict:
     }
 
 
-def analyze_duplicates_for_file(db: Session, file_id: int, min_amount: float) -> dict:
+def analyze_duplicates_for_file(db: Session, file_id: int) -> dict:
     """
     - Кластеры по (order_number + address)
     - Жесткие дубли: совпали order_number + address + work_type (payout >= min_amount)
@@ -189,16 +189,12 @@ def analyze_duplicates_for_file(db: Session, file_id: int, min_amount: float) ->
             by_type[r.work_type].append(r)
             if r.work_type in ("diagnostic", "inspection"):
                 has_diag_or_insp = True
-            if r.work_type == "installation" and r.payout is not None and r.payout >= min_amount:
+            if r.work_type == "installation"
                 has_install = True
 
         # Жесткие дубли: по одному work_type есть 2+ записей с payout >= min_amount
         for wt, items in by_type.items():
             if len(items) >= 2:
-                filtered = [
-                    r for r in items
-                    if (r.payout is not None and r.payout >= min_amount)
-                ]
                 if len(filtered) >= 2:
                     hard_duplicates.append({
                         "order_number": order_number,
@@ -234,7 +230,6 @@ def ping():
 @app.post("/upload")
 async def upload_file(
     file: UploadFile = FastAPIFile(...),
-    min_amount: float = Form(4500),
     db: Session = Depends(get_db),
 ):
     """
@@ -398,7 +393,7 @@ async def upload_file(
 
     db.commit()
 
-    analysis = analyze_duplicates_for_file(db, db_file.id, min_amount)
+    analysis = analyze_duplicates_for_file(db, db_file.id)
 
     return {
         "message": "Файл загружен и обработан",
