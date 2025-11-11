@@ -102,30 +102,21 @@ def extract_address(text: str) -> str | None:
     """
     Черновой вариант:
     - Ищем 'от ДД.ММ.ГГГГ' и берём всё после первой запятой.
-    - Режем хвост с числами и 'nan', чтобы не тянуть финансы в адрес.
     - Если не нашли — возвращаем None (уйдет в проблемные).
     """
     if not text:
         return None
 
     m = re.search(r"от\s+\d{2}\.\d{2}\.\d{4}[^,]*,(.+)$", text)
-    if not m:
-        return None
-
-    address = m.group(1)
-
-    # обрезаем всё, что похоже на числовые хвосты или nan/NaN и т.п.
-    address = re.split(r"\bnan\b|\bNaN\b|\d{3,}", address)[0]
-
-    address = address.strip(",. \n\t")
-    return address or None
+    if m:
+        return m.group(1).strip()
+    return None
 
 
 def is_template_row(row: dict) -> bool:
     """
-    Фильтр шаблонных строк:
-    - Заголовки, общие подписи, пустые строки.
-    Потом можно дообучить под твой формат.
+    Фильтр шаблонных/служебных строк:
+    - Заголовки, общие подписи, пустые строки, итоги.
     """
     joined = " ".join([str(v) for v in row.values() if v is not None]).strip().lower()
     if not joined:
@@ -136,7 +127,11 @@ def is_template_row(row: dict) -> bool:
     if any(k in joined for k in keywords):
         return False
 
-    # Если нет цифр и очень мало символов — похоже на мусор/шапку
+    # Строки типа "итого ..." считаем служебными
+    if joined.startswith("итого"):
+        return True
+
+    # Если нет цифр и очень мало символов — мусор/шапка
     if not any(ch.isdigit() for ch in joined) and len(joined) < 10:
         return True
 
@@ -241,37 +236,16 @@ async def upload_file(
 ):
     """
     1. Читаем Excel.
-    2. Находим строку с заголовками (Монтажник и пр.).
-    3. Читаем данные с этой строки как header.
-    4. Создаем запись о файле.
-    5. Разбираем строки и сохраняем в orders.
-    6. Считаем дубли и комбинированные кейсы.
+    2. Создаем запись о файле.
+    3. Разбираем строки и сохраняем в orders.
+    4. Считаем дубли и комбинированные кейсы.
     """
+
     content = await file.read()
 
-    # --- Чтение Excel с поиском строки заголовков ---
     try:
-        xls = pd.ExcelFile(io.BytesIO(content))
-        sheet_name = xls.sheet_names[0]
-
-        temp_df = pd.read_excel(xls, sheet_name=sheet_name, header=None)
-
-        header_row_idx = None
-        for i, row in temp_df.iterrows():
-            first_cell = str(row.iloc[0]).strip().lower()
-            # ориентир: строка, где первый столбец содержит "монтажник"
-            if "монтажник" in first_cell:
-                header_row_idx = i
-                break
-
-        if header_row_idx is None:
-            return JSONResponse(
-                status_code=400,
-                content={"error": "Не найдена строка с заголовками (Монтажник)"},
-            )
-
-        df = pd.read_excel(xls, sheet_name=sheet_name, header=header_row_idx)
-
+        # ВАЖНО: указываем строку заголовков (6-я строка Excel => header=5)
+        df = pd.read_excel(io.BytesIO(content), header=5)
     except Exception as e:
         return JSONResponse(
             status_code=400,
@@ -306,14 +280,19 @@ async def upload_file(
                 payout_col = c
                 break
 
+    # Колонка монтажника / исполнителя
     worker_col = next(
         (c for c in df.columns if "фио" in str(c).lower() or "монтажник" in str(c).lower()),
         None,
     )
+
+    # Колонка описания работ
     name_col = next(
         (c for c in df.columns if "наименование" in str(c).lower() or "вид работ" in str(c).lower()),
         None,
     )
+
+    # Комментарий
     comment_col = next(
         (c for c in df.columns if "коммент" in str(c).lower()),
         None,
@@ -334,14 +313,16 @@ async def upload_file(
         total_rows += 1
         row_dict = row.to_dict()
 
+        # Служебные / пустые / итоговые строки — пропускаем
         if is_template_row(row_dict):
             continue
 
         # Базовый текст для парсинга номера и адреса
-        if order_col and row.get(order_col) is not None:
+        if order_col and row.get(order_col) is not None and str(row.get(order_col)).strip():
             text_cell = str(row.get(order_col))
         else:
-            text_cell = " ".join([str(v) for v in row_dict.values() if v is not None])
+            # если по какой-то причине нет колонки заказа, fallback
+            text_cell = " ".join([str(v) for v in row_dict.values() if pd.notna(v)])
 
         order_number = extract_order_number(text_cell)
         address = extract_address(text_cell)
@@ -375,7 +356,11 @@ async def upload_file(
             except Exception:
                 insp_sum = 0.0
 
-        # Тип работы
+        # Тип работы:
+        # - любая ненулевая диагностика -> diagnostic
+        # - ненулевая выручка выезда -> inspection
+        # - payout > 5000 -> installation
+        # - иначе other
         if diag_sum > 0:
             work_type = "diagnostic"
         elif insp_sum > 0:
