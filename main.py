@@ -3,10 +3,11 @@ import io
 import re
 from datetime import datetime
 from collections import defaultdict
+from typing import Optional
 import pandas as pd
-from fastapi import FastAPI, UploadFile, File as FastAPIFile, Depends, Request
-from fastapi.responses import JSONResponse, HTMLResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, UploadFile, File as FastAPIFile, Depends, Request, Query
+from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse
+from fastapi.templating import Jinja2Templates
 from sqlalchemy import (
     create_engine,
     Column,
@@ -17,222 +18,18 @@ from sqlalchemy import (
     ForeignKey,
     DateTime,
     Text,
+    desc,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship, Session
 
 # ========== Настройки приложения ==========
 app = FastAPI(title="MOS-GSM Duplicate Checker")
 
-# Создаем директорию для статических файлов если её нет
-os.makedirs("static", exist_ok=True)
+# Создаем директорию для шаблонов
+os.makedirs("templates", exist_ok=True)
 
-# HTML шаблон главной страницы
-HTML_TEMPLATE = """
-<!DOCTYPE html>
-<html lang="ru">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MOS-GSM Duplicate Checker</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-</head>
-<body class="bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 min-h-screen">
-    <div class="container mx-auto px-4 py-8 max-w-6xl">
-        <!-- Шапка -->
-        <div class="bg-gray-800 rounded-lg shadow-2xl p-6 mb-6 border border-gray-700">
-            <h1 class="text-3xl font-bold text-white mb-2">📊 MOS-GSM Duplicate Checker</h1>
-            <p class="text-gray-400">Система проверки дублирующих выплат монтажникам</p>
-        </div>
-
-        <!-- Блок загрузки -->
-        <div class="bg-gray-800 rounded-lg shadow-2xl p-6 mb-6 border border-gray-700">
-            <h2 class="text-xl font-semibold text-white mb-4">📁 Загрузить Excel файл</h2>
-            
-            <div class="border-2 border-dashed border-gray-600 rounded-lg p-8 text-center hover:border-blue-500 transition-colors">
-                <input type="file" id="fileInput" accept=".xlsx,.xls" class="hidden">
-                <label for="fileInput" class="cursor-pointer">
-                    <div class="text-gray-400 mb-2">
-                        <svg class="w-16 h-16 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
-                        </svg>
-                    </div>
-                    <span class="text-blue-400 font-semibold">Нажмите для выбора файла</span>
-                    <p class="text-gray-500 text-sm mt-2">или перетащите файл сюда</p>
-                </label>
-            </div>
-
-            <button id="uploadBtn" class="mt-4 w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-6 rounded-lg transition-colors disabled:bg-gray-600 disabled:cursor-not-allowed">
-                Загрузить и проверить
-            </button>
-
-            <div id="progress" class="hidden mt-4">
-                <div class="bg-gray-700 rounded-full h-2 overflow-hidden">
-                    <div class="bg-blue-500 h-full animate-pulse" style="width: 100%"></div>
-                </div>
-                <p class="text-center text-gray-400 mt-2">Обработка файла...</p>
-            </div>
-        </div>
-
-        <!-- Результаты -->
-        <div id="results" class="hidden">
-            <!-- Общая статистика -->
-            <div class="bg-gray-800 rounded-lg shadow-2xl p-6 mb-6 border border-gray-700">
-                <h2 class="text-xl font-semibold text-white mb-4">📈 Статистика</h2>
-                <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    <div class="bg-gray-700 rounded-lg p-4">
-                        <div class="text-gray-400 text-sm">Всего строк</div>
-                        <div class="text-2xl font-bold text-white" id="totalRows">-</div>
-                    </div>
-                    <div class="bg-gray-700 rounded-lg p-4">
-                        <div class="text-gray-400 text-sm">Сохранено</div>
-                        <div class="text-2xl font-bold text-green-400" id="savedRows">-</div>
-                    </div>
-                    <div class="bg-gray-700 rounded-lg p-4">
-                        <div class="text-gray-400 text-sm">Проблемных</div>
-                        <div class="text-2xl font-bold text-yellow-400" id="problematicRows">-</div>
-                    </div>
-                    <div class="bg-gray-700 rounded-lg p-4">
-                        <div class="text-gray-400 text-sm">Дублей</div>
-                        <div class="text-2xl font-bold text-red-400" id="duplicatesCount">-</div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Жесткие дубли -->
-            <div id="hardDuplicatesBlock" class="bg-gray-800 rounded-lg shadow-2xl p-6 mb-6 border border-red-500">
-                <h2 class="text-xl font-semibold text-red-400 mb-4">🔴 Жесткие дубли (риск переплаты)</h2>
-                <div id="hardDuplicatesList"></div>
-            </div>
-
-            <!-- Комбо -->
-            <div id="comboBlock" class="bg-gray-800 rounded-lg shadow-2xl p-6 mb-6 border border-yellow-500">
-                <h2 class="text-xl font-semibold text-yellow-400 mb-4">🟡 Комбо (осмотр + монтаж)</h2>
-                <div id="comboList"></div>
-            </div>
-
-            <!-- Проблемные строки -->
-            <div id="problematicBlock" class="bg-gray-800 rounded-lg shadow-2xl p-6 border border-gray-600">
-                <h2 class="text-xl font-semibold text-gray-400 mb-4">⚠️ Проблемные строки</h2>
-                <p class="text-gray-500 text-sm">Строки без номера заказа или адреса</p>
-            </div>
-        </div>
-    </div>
-
-    <script>
-        const fileInput = document.getElementById('fileInput');
-        const uploadBtn = document.getElementById('uploadBtn');
-        const progress = document.getElementById('progress');
-        const results = document.getElementById('results');
-
-        let selectedFile = null;
-
-        fileInput.addEventListener('change', (e) => {
-            selectedFile = e.target.files[0];
-            if (selectedFile) {
-                uploadBtn.disabled = false;
-                uploadBtn.textContent = `Загрузить: ${selectedFile.name}`;
-            }
-        });
-
-        uploadBtn.addEventListener('click', async () => {
-            if (!selectedFile) return;
-
-            const formData = new FormData();
-            formData.append('file', selectedFile);
-
-            uploadBtn.disabled = true;
-            progress.classList.remove('hidden');
-            results.classList.add('hidden');
-
-            try {
-                const response = await fetch('/upload', {
-                    method: 'POST',
-                    body: formData
-                });
-
-                const data = await response.json();
-                
-                progress.classList.add('hidden');
-                uploadBtn.disabled = false;
-                uploadBtn.textContent = 'Загрузить и проверить';
-                
-                displayResults(data);
-            } catch (error) {
-                alert('Ошибка при загрузке: ' + error.message);
-                progress.classList.add('hidden');
-                uploadBtn.disabled = false;
-            }
-        });
-
-        function displayResults(data) {
-            results.classList.remove('hidden');
-
-            // Статистика
-            document.getElementById('totalRows').textContent = data.total_rows_in_file;
-            document.getElementById('savedRows').textContent = data.saved_rows;
-            document.getElementById('problematicRows').textContent = data.problematic_rows;
-            document.getElementById('duplicatesCount').textContent = data.hard_duplicates_count;
-
-            // Жесткие дубли
-            const hardDuplicatesList = document.getElementById('hardDuplicatesList');
-            if (data.hard_duplicates_sample && data.hard_duplicates_sample.length > 0) {
-                hardDuplicatesList.innerHTML = data.hard_duplicates_sample.map(dup => `
-                    <div class="bg-gray-700 rounded-lg p-4 mb-3">
-                        <div class="text-white font-semibold mb-2">
-                            ${dup.order_number} - ${dup.address}
-                        </div>
-                        <div class="text-sm text-gray-400 mb-2">Тип: ${translateWorkType(dup.work_type)}</div>
-                        <div class="space-y-1">
-                            ${dup.rows.map(row => `
-                                <div class="text-sm text-gray-300 bg-gray-600 rounded p-2">
-                                    💰 ${row.payout ? row.payout.toFixed(2) + ' ₽' : 'Нет суммы'} | 
-                                    👤 ${row.worker_name || 'Нет имени'}
-                                </div>
-                            `).join('')}
-                        </div>
-                    </div>
-                `).join('');
-            } else {
-                hardDuplicatesList.innerHTML = '<p class="text-gray-500">Жестких дублей не найдено ✅</p>';
-            }
-
-            // Комбо
-            const comboList = document.getElementById('comboList');
-            if (data.combo_clusters_sample && data.combo_clusters_sample.length > 0) {
-                comboList.innerHTML = data.combo_clusters_sample.map(combo => `
-                    <div class="bg-gray-700 rounded-lg p-4 mb-3">
-                        <div class="text-white font-semibold mb-2">
-                            ${combo.order_number} - ${combo.address}
-                        </div>
-                        <div class="space-y-1">
-                            ${combo.rows.map(row => `
-                                <div class="text-sm text-gray-300 bg-gray-600 rounded p-2">
-                                    ${translateWorkType(row.work_type)} | 
-                                    💰 ${row.payout ? row.payout.toFixed(2) + ' ₽' : '-'} | 
-                                    👤 ${row.worker_name || '-'}
-                                </div>
-                            `).join('')}
-                        </div>
-                    </div>
-                `).join('');
-            } else {
-                comboList.innerHTML = '<p class="text-gray-500">Комбо не найдено</p>';
-            }
-        }
-
-        function translateWorkType(type) {
-            const types = {
-                'diagnostic': '🔍 Диагностика',
-                'inspection': '👁️ Осмотр',
-                'installation': '🔧 Монтаж',
-                'other': '❓ Другое'
-            };
-            return types[type] || type;
-        }
-    </script>
-</body>
-</html>
-"""
+# Инициализация шаблонов
+templates = Jinja2Templates(directory="templates")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
@@ -270,17 +67,14 @@ class OrderRow(Base):
 # ========== Инициализация БД ==========
 @app.on_event("startup")
 def on_startup():
-    # Проверяем переменную окружения для сброса БД
     if os.getenv("RESET_DB") == "true":
         print("⚠️  RESET_DB=true - Удаление всех таблиц...")
         Base.metadata.drop_all(bind=engine)
         print("✅ Таблицы удалены")
     
-    # Создаём таблицы заново
     Base.metadata.create_all(bind=engine)
     print("✅ Таблицы созданы")
 
-# ========== Зависимость для БД ==========
 def get_db() -> Session:
     db = SessionLocal()
     try:
@@ -298,20 +92,13 @@ def extract_order_number(text: str) -> str | None:
     return m.group(0) if m else None
 
 def extract_address(text: str) -> str | None:
-    """
-    Улучшенный парсинг адреса:
-    - Ищем паттерн "от [дата] [время], [адрес]"
-    - Если не нашли - пробуем просто после даты
-    """
     if not text:
         return None
     
-    # Паттерн с временем: "от 02.10.2025 15:13:20, адрес..."
     match = re.search(r"от\s+\d{2}\.\d{2}\.\d{4}\s+[\d:]+,\s*(.+)$", text)
     if match:
         return match.group(1).strip()
     
-    # Альтернативный паттерн: просто после даты
     match = re.search(r"от\s+\d{2}\.\d{2}\.\d{4}[^,]*,\s*(.+)$", text)
     if match:
         return match.group(1).strip()
@@ -319,23 +106,18 @@ def extract_address(text: str) -> str | None:
     return None
 
 def is_template_row(row: dict) -> bool:
-    """
-    Фильтр шаблонных/служебных строк
-    """
+    """Фильтр шаблонных строк"""
     joined = " ".join([str(v) for v in row.values() if v is not None]).strip().lower()
     if not joined:
         return True
     
-    # Явные рабочие признаки
     keywords = ["заказ", "клиент", "монтаж", "диагност", "выезд", "адрес", "сумма"]
     if any(k in joined for k in keywords):
         return False
     
-    # Строки "итого ..." - служебные
     if joined.startswith("итого"):
         return True
     
-    # Если нет цифр и мало символов - мусор
     if not any(ch.isdigit() for ch in joined) and len(joined) < 10:
         return True
     
@@ -345,7 +127,6 @@ def normalize_text(text: str) -> str:
     """Нормализация текста для сравнения"""
     if not text:
         return ""
-    # Убираем лишние пробелы, приводим к нижнему регистру
     return " ".join(text.lower().strip().split())
 
 # ========== Аналитика дублей ==========
@@ -358,12 +139,11 @@ def row_short(r: OrderRow) -> dict:
         "payout": r.payout,
         "worker_name": r.worker_name,
         "work_type": r.work_type,
+        "raw_text": r.raw_text[:100] if r.raw_text else "",
     }
 
 def analyze_duplicates_for_file(db: Session, file_id: int) -> dict:
-    """
-    Анализ по всей базе для поиска дублей между файлами
-    """
+    """Анализ с учётом проблемных строк"""
     all_orders: list[OrderRow] = (
         db.query(OrderRow)
         .filter(
@@ -375,7 +155,6 @@ def analyze_duplicates_for_file(db: Session, file_id: int) -> dict:
     
     clusters = defaultdict(list)
     for r in all_orders:
-        # ВАЖНО: нормализуем адрес для правильного сравнения
         key = (
             r.order_number.strip().upper(),
             normalize_text(r.address)
@@ -390,7 +169,6 @@ def analyze_duplicates_for_file(db: Session, file_id: int) -> dict:
         if len(rows) < 2:
             continue
         
-        # Берём оригинальный адрес из первой строки для отображения
         original_address = rows[0].address
         clusters_with_multiple.append((order_number, original_address, rows))
         
@@ -405,7 +183,6 @@ def analyze_duplicates_for_file(db: Session, file_id: int) -> dict:
             if r.work_type == "installation":
                 has_install = True
         
-        # Жесткие дубли: 2+ записи с одним work_type
         for wt, items in by_type.items():
             if len(items) >= 2:
                 hard_duplicates.append({
@@ -415,7 +192,6 @@ def analyze_duplicates_for_file(db: Session, file_id: int) -> dict:
                     "rows": [row_short(r) for r in items],
                 })
         
-        # Комбо: диагностика/осмотр + монтаж
         if has_diag_or_insp and has_install:
             combo_clusters.append({
                 "order_number": order_number,
@@ -423,106 +199,177 @@ def analyze_duplicates_for_file(db: Session, file_id: int) -> dict:
                 "rows": [row_short(r) for r in rows],
             })
     
+    # ВАЖНО: Добавляем проблемные строки
+    problematic_orders = (
+        db.query(OrderRow)
+        .filter(OrderRow.file_id == file_id, OrderRow.is_problematic == True)
+        .all()
+    )
+    
     return {
         "clusters_with_multiple_count": len(clusters_with_multiple),
         "hard_duplicates_count": len(hard_duplicates),
         "combo_clusters_count": len(combo_clusters),
+        "problematic_count": len(problematic_orders),
         "hard_duplicates_sample": hard_duplicates[:30],
         "combo_clusters_sample": combo_clusters[:30],
+        "problematic_sample": [row_short(r) for r in problematic_orders[:30]],
     }
 
-# ========== Эндпоинты ==========
-@app.get("/", response_class=HTMLResponse)
-async def root():
-    """Главная страница с интерфейсом"""
-    return HTML_TEMPLATE
+# ========== API Эндпоинты ==========
 
-@app.get("/ping")
-def ping():
-    return {"status": "ok"}
-
-@app.post("/reset-database")
-async def reset_database(db: Session = Depends(get_db)):
-    """
-    ВНИМАНИЕ: Удаляет ВСЕ данные из базы!
-    Используйте с осторожностью.
-    """
-    try:
-        # Удаляем все записи
-        db.query(OrderRow).delete()
-        db.query(File).delete()
-        db.commit()
+@app.get("/api/files")
+async def api_get_files(db: Session = Depends(get_db)):
+    """Список всех файлов"""
+    files = db.query(File).order_by(desc(File.uploaded_at)).all()
+    
+    result = []
+    for f in files:
+        total_rows = db.query(OrderRow).filter(OrderRow.file_id == f.id).count()
+        problematic = db.query(OrderRow).filter(
+            OrderRow.file_id == f.id, 
+            OrderRow.is_problematic == True
+        ).count()
         
-        return {
-            "message": "База данных успешно очищена",
-            "status": "success"
-        }
-    except Exception as e:
-        db.rollback()
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Ошибка при очистке БД: {str(e)}"}
-        )
+        result.append({
+            "id": f.id,
+            "filename": f.filename,
+            "uploaded_at": f.uploaded_at.isoformat(),
+            "total_rows": total_rows,
+            "problematic_rows": problematic,
+        })
+    
+    return {"files": result}
 
-@app.get("/debug/orders/{file_id}")
-async def debug_orders(file_id: int, db: Session = Depends(get_db)):
-    """Посмотреть, как распарсились строки"""
-    orders = db.query(OrderRow).filter(OrderRow.file_id == file_id).limit(20).all()
+@app.get("/api/files/{file_id}")
+async def api_get_file(file_id: int, db: Session = Depends(get_db)):
+    """Детали файла"""
+    file = db.query(File).filter(File.id == file_id).first()
+    if not file:
+        return JSONResponse(status_code=404, content={"error": "File not found"})
+    
+    analysis = analyze_duplicates_for_file(db, file_id)
+    total_rows = db.query(OrderRow).filter(OrderRow.file_id == file_id).count()
     
     return {
-        "orders": [
-            {
-                "id": o.id,
-                "order_number": o.order_number,
-                "address": o.address[:50] if o.address else None,
-                "payout": o.payout,
-                "work_type": o.work_type,
-                "worker_name": o.worker_name,
-            }
-            for o in orders
-        ]
+        "id": file.id,
+        "filename": file.filename,
+        "uploaded_at": file.uploaded_at.isoformat(),
+        "total_rows": total_rows,
+        "analysis": analysis,
     }
 
-@app.post("/debug/columns")
-async def debug_columns(file: UploadFile = FastAPIFile(...)):
-    """Посмотреть названия колонок в Excel"""
-    content = await file.read()
+@app.get("/api/files/{file_id}/rows")
+async def api_get_rows(
+    file_id: int,
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=500),
+    order_number: Optional[str] = None,
+    address: Optional[str] = None,
+    worker_name: Optional[str] = None,
+    work_type: Optional[str] = None,
+    problematic_only: bool = False,
+    db: Session = Depends(get_db)
+):
+    """Строки файла с фильтрацией и пагинацией"""
+    query = db.query(OrderRow).filter(OrderRow.file_id == file_id)
     
-    try:
-        df = pd.read_excel(io.BytesIO(content), header=6)
-        df.columns = [str(col).strip() if col is not None else "" for col in df.columns]
-        
-        return {
-            "columns": list(df.columns),
-            "first_row_sample": df.iloc[0].to_dict() if len(df) > 0 else {}
-        }
-    except Exception as e:
-        return {"error": str(e)}
+    if order_number:
+        query = query.filter(OrderRow.order_number.ilike(f"%{order_number}%"))
+    if address:
+        query = query.filter(OrderRow.address.ilike(f"%{address}%"))
+    if worker_name:
+        query = query.filter(OrderRow.worker_name.ilike(f"%{worker_name}%"))
+    if work_type:
+        query = query.filter(OrderRow.work_type == work_type)
+    if problematic_only:
+        query = query.filter(OrderRow.is_problematic == True)
+    
+    total = query.count()
+    offset = (page - 1) * limit
+    rows = query.offset(offset).limit(limit).all()
+    
+    return {
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "rows": [row_short(r) for r in rows],
+    }
+
+@app.delete("/api/files/{file_id}")
+async def api_delete_file(file_id: int, db: Session = Depends(get_db)):
+    """Удалить файл и его записи"""
+    db.query(OrderRow).filter(OrderRow.file_id == file_id).delete()
+    db.query(File).filter(File.id == file_id).delete()
+    db.commit()
+    return {"message": "File deleted successfully"}
+
+@app.post("/api/files/{file_id}/recalc")
+async def api_recalc_file(file_id: int, db: Session = Depends(get_db)):
+    """Пересчитать анализ файла"""
+    analysis = analyze_duplicates_for_file(db, file_id)
+    return {"message": "Analysis recalculated", "analysis": analysis}
+
+@app.get("/api/files/{file_id}/export/{what}")
+async def api_export(
+    file_id: int,
+    what: str,
+    db: Session = Depends(get_db)
+):
+    """Экспорт в CSV"""
+    file = db.query(File).filter(File.id == file_id).first()
+    if not file:
+        return JSONResponse(status_code=404, content={"error": "File not found"})
+    
+    if what == "rows":
+        rows = db.query(OrderRow).filter(OrderRow.file_id == file_id).all()
+        data = [row_short(r) for r in rows]
+    elif what == "problematic":
+        rows = db.query(OrderRow).filter(
+            OrderRow.file_id == file_id,
+            OrderRow.is_problematic == True
+        ).all()
+        data = [row_short(r) for r in rows]
+    elif what in ["hard", "combo", "clusters"]:
+        analysis = analyze_duplicates_for_file(db, file_id)
+        if what == "hard":
+            data = analysis["hard_duplicates_sample"]
+        elif what == "combo":
+            data = analysis["combo_clusters_sample"]
+        else:
+            data = []
+    else:
+        return JSONResponse(status_code=400, content={"error": "Invalid export type"})
+    
+    # Создаём CSV
+    df = pd.DataFrame(data)
+    output = io.StringIO()
+    df.to_csv(output, index=False, encoding='utf-8-sig')
+    output.seek(0)
+    
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={file.filename}_{what}.csv"}
+    )
 
 @app.post("/upload")
 async def upload_file(
     file: UploadFile = FastAPIFile(...),
     db: Session = Depends(get_db),
 ):
-    """
-    Загрузка и обработка Excel файла
-    """
+    """Загрузка и обработка Excel файла"""
     content = await file.read()
     
     try:
-        # Читаем Excel, заголовки в 7-й строке (индекс 6)
         df = pd.read_excel(io.BytesIO(content), header=6)
-        
-        # Очищаем названия колонок
         df.columns = [str(col).strip() if col is not None else "" for col in df.columns]
-        
     except Exception as e:
         return JSONResponse(
             status_code=400,
             content={"error": f"Не удалось прочитать Excel: {str(e)}"},
         )
     
-    # Создаём запись о файле
     db_file = File(filename=file.filename)
     db.add(db_file)
     db.commit()
@@ -532,7 +379,7 @@ async def upload_file(
     inserted_rows = 0
     problematic_rows = 0
     
-    # Находим колонку заказа
+    # Находим колонки
     order_col = None
     for c in df.columns:
         if "заказ" in str(c).lower() and "комментар" in str(c).lower():
@@ -542,7 +389,6 @@ async def upload_file(
         possible_order_cols = [c for c in df.columns if "заказ" in str(c).lower()]
         order_col = possible_order_cols[0] if possible_order_cols else None
     
-    # Находим колонку "Итого" (ТОЛЬКО из этой колонки берем основную сумму)
     payout_col = None
     for c in df.columns:
         name = str(c).strip()
@@ -550,7 +396,6 @@ async def upload_file(
             payout_col = c
             break
     
-    # Находим колонку монтажника
     worker_col = None
     for c in df.columns:
         name = str(c).lower()
@@ -560,9 +405,6 @@ async def upload_file(
     if worker_col is None and len(df.columns) > 0:
         worker_col = df.columns[0]
     
-    # Колонки для типа работы
-    
-    # Диагностика: ищем "Диагностика" или "Оплата диагностики"
     diagnostic_col = None
     for c in df.columns:
         name = str(c).lower()
@@ -570,7 +412,6 @@ async def upload_file(
             diagnostic_col = c
             break
     
-    # Осмотр: ищем "Выручка (выезд) специалиста"
     inspection_col = None
     for c in df.columns:
         name = str(c).lower()
@@ -579,7 +420,6 @@ async def upload_file(
             inspection_col = c
             break
     
-    # Колонка комментариев
     comment_col = None
     for c in df.columns:
         if "коммент" in str(c).lower():
@@ -591,11 +431,9 @@ async def upload_file(
         total_rows += 1
         row_dict = row.to_dict()
         
-        # Пропускаем служебные строки
         if is_template_row(row_dict):
             continue
         
-        # Извлекаем текст из колонки заказа
         text_cell = ""
         if order_col and pd.notna(row.get(order_col)):
             text_cell = str(row.get(order_col)).strip()
@@ -603,11 +441,9 @@ async def upload_file(
         if not text_cell:
             text_cell = " ".join([str(v) for v in row_dict.values() if pd.notna(v)])
         
-        # Парсим номер заказа и адрес
         order_number = extract_order_number(text_cell)
         address = extract_address(text_cell)
         
-        # Извлекаем сумму из колонки "Итого"
         payout_val = None
         if payout_col is not None:
             raw = row.get(payout_col)
@@ -621,9 +457,7 @@ async def upload_file(
                 except Exception:
                     payout_val = None
         
-        # Суммы для определения типа работы
         diag_sum = 0.0
-        # Ищем колонку "Диагностика" или "Оплата диагностики"
         if diagnostic_col and pd.notna(row.get(diagnostic_col)):
             try:
                 val = str(row.get(diagnostic_col)).replace(" ", "").replace(",", ".")
@@ -632,7 +466,6 @@ async def upload_file(
                 diag_sum = 0.0
         
         insp_sum = 0.0
-        # Ищем колонку "Выручка (выезд) специалиста"
         if inspection_col and pd.notna(row.get(inspection_col)):
             try:
                 val = str(row.get(inspection_col)).replace(" ", "").replace(",", ".")
@@ -640,41 +473,31 @@ async def upload_file(
             except Exception:
                 insp_sum = 0.0
         
-        # Определяем тип работы (ВАЖНО: порядок проверки имеет значение)
-        work_type = "other"  # по умолчанию
-        
-        # 1. Если есть диагностика > 0 → diagnostic
+        work_type = "other"
         if diag_sum > 0:
             work_type = "diagnostic"
-        # 2. Если есть выезд специалиста > 0 → inspection
         elif insp_sum > 0:
             work_type = "inspection"
-        # 3. Если "Итого" > 5000 → installation
         elif payout_val is not None and payout_val > 5000:
             work_type = "installation"
-        # 4. Иначе → other
         
-        # Извлекаем имя монтажника
         worker_name = None
         if worker_col and pd.notna(row.get(worker_col)):
             worker_name = str(row.get(worker_col)).strip()
-            # Фильтруем заголовки
             if worker_name.lower() in ["монтажник", "исполнитель", "фио", ""]:
                 worker_name = None
         
-        # Комментарий
         comment_value = ""
         if comment_col and pd.notna(row.get(comment_col)):
             comment_value = str(row.get(comment_col)).strip()
         
-        # Проверка на проблемную строку
+        # ВАЖНО: Проблемная строка если нет номера ИЛИ нет адреса
         is_problematic = False
         parsed_ok = True
-        if not order_number and not address:
+        if not order_number or not address:
             is_problematic = True
             parsed_ok = False
         
-        # Сохраняем в БД
         order_row = OrderRow(
             file_id=db_file.id,
             raw_text=text_cell[:1000] if text_cell else "",
@@ -694,7 +517,6 @@ async def upload_file(
     
     db.commit()
     
-    # Анализ дублей
     analysis = analyze_duplicates_for_file(db, db_file.id)
     
     return {
@@ -707,6 +529,80 @@ async def upload_file(
         "clusters_with_multiple_count": analysis["clusters_with_multiple_count"],
         "hard_duplicates_count": analysis["hard_duplicates_count"],
         "combo_clusters_count": analysis["combo_clusters_count"],
+        "problematic_count": analysis["problematic_count"],
         "hard_duplicates_sample": analysis["hard_duplicates_sample"],
         "combo_clusters_sample": analysis["combo_clusters_sample"],
+        "problematic_sample": analysis["problematic_sample"],
     }
+
+# ========== UI Эндпоинты ==========
+
+@app.get("/", response_class=HTMLResponse)
+async def ui_home(request: Request):
+    """Главная страница - загрузка файла"""
+    return templates.TemplateResponse("upload.html", {"request": request})
+
+@app.get("/ui/files", response_class=HTMLResponse)
+async def ui_files_list(request: Request, db: Session = Depends(get_db)):
+    """Список всех файлов"""
+    files = db.query(File).order_by(desc(File.uploaded_at)).all()
+    
+    files_data = []
+    for f in files:
+        total_rows = db.query(OrderRow).filter(OrderRow.file_id == f.id).count()
+        problematic = db.query(OrderRow).filter(
+            OrderRow.file_id == f.id, 
+            OrderRow.is_problematic == True
+        ).count()
+        
+        files_data.append({
+            "id": f.id,
+            "filename": f.filename,
+            "uploaded_at": f.uploaded_at.strftime("%d.%m.%Y %H:%M"),
+            "total_rows": total_rows,
+            "problematic_rows": problematic,
+        })
+    
+    return templates.TemplateResponse("files_list.html", {
+        "request": request,
+        "files": files_data
+    })
+
+@app.get("/ui/files/{file_id}", response_class=HTMLResponse)
+async def ui_file_detail(request: Request, file_id: int, db: Session = Depends(get_db)):
+    """Детали файла с табами"""
+    file = db.query(File).filter(File.id == file_id).first()
+    if not file:
+        return HTMLResponse(content="<h1>Файл не найден</h1>", status_code=404)
+    
+    analysis = analyze_duplicates_for_file(db, file_id)
+    total_rows = db.query(OrderRow).filter(OrderRow.file_id == file_id).count()
+    
+    return templates.TemplateResponse("file_detail.html", {
+        "request": request,
+        "file": file,
+        "file_id": file_id,
+        "total_rows": total_rows,
+        "analysis": analysis,
+    })
+
+@app.get("/admin/reset", response_class=HTMLResponse)
+async def ui_admin(request: Request):
+    """Страница сервисных функций"""
+    return templates.TemplateResponse("admin.html", {"request": request})
+
+@app.post("/admin/reset/soft")
+async def admin_reset_soft(db: Session = Depends(get_db)):
+    """Мягкий сброс - удаляет данные"""
+    db.query(OrderRow).delete()
+    db.query(File).delete()
+    db.commit()
+    return {"message": "Все данные удалены"}
+
+@app.post("/admin/reset/hard")
+async def admin_reset_hard(db: Session = Depends(get_db)):
+    """Жёсткий сброс - удаляет таблицы"""
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    return {"message": "База данных пересоздана"}
+
