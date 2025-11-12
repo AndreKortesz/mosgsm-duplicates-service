@@ -7,6 +7,7 @@ from typing import Optional
 import pandas as pd
 from fastapi import FastAPI, UploadFile, File as FastAPIFile, Depends, Request, Query
 from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import (
     create_engine,
@@ -25,8 +26,12 @@ from sqlalchemy.orm import declarative_base, sessionmaker, relationship, Session
 # ========== Настройки приложения ==========
 app = FastAPI(title="Mos-GSM Duplicate Checker")
 
-# Создаем директорию для шаблонов
+# Создаем директории
 os.makedirs("templates", exist_ok=True)
+os.makedirs("static", exist_ok=True)
+
+# Подключаем статические файлы
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Инициализация шаблонов
 templates = Jinja2Templates(directory="templates")
