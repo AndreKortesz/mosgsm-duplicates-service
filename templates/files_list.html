@@ -11,55 +11,77 @@
         </a>
     </div>
 
-    {% if files %}
-    <div class="bg-gray-800 rounded-lg shadow-2xl border border-gray-700 overflow-hidden">
-        <table class="w-full">
-            <thead class="bg-gray-700">
-<thead class="bg-gray-700">
-    <tr>
-        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">ID</th>
-        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Имя файла</th>
-        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Дата</th>
-        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Записей</th>
-        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">⚠️ Проблем</th>
-        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">🔴 Дублей</th>
-        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">🟡 Комбо</th>
-        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">🔵 Проверки</th>
-        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Действия</th>
-    </tr>
-</thead>
-            <tbody class="divide-y divide-gray-700">
-                {% for file in files %}
-                <tr class="hover:bg-gray-700 transition-colors">
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-300">{{ file.id }}</td>
-                    <td class="px-6 py-4 text-sm text-white font-medium">{{ file.filename }}</td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-400">{{ file.uploaded_at }}</td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-green-400">{{ file.total_rows }}</td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm">
-                        <span class="{% if file.problematic_rows > 0 %}text-yellow-400{% else %}text-gray-500{% endif %}">
-                            {{ file.problematic_rows }}
-                        </span>
-                    </td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm space-x-2">
-                        <a href="/ui/files/{{ file.id }}" class="text-blue-400 hover:text-blue-300">Открыть</a>
-                        <button onclick="deleteFile({{ file.id }}, '{{ file.filename }}')" class="text-red-400 hover:text-red-300">Удалить</button>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+    <div id="filesContainer">
+        <div class="bg-gray-800 rounded-lg shadow-2xl border border-gray-700 overflow-hidden">
+            <table class="w-full">
+                <thead class="bg-gray-700">
+                    <tr>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">ID</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Имя файла</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Дата</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Записей</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">⚠️ Проблем</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">🔴 Дублей</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">🟡 Комбо</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">🔵 Проверки</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Действия</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-700" id="filesTableBody">
+                    <tr>
+                        <td colspan="9" class="text-center text-gray-500 py-8">Загрузка...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
     </div>
-    {% else %}
-    <div class="bg-gray-800 rounded-lg shadow-2xl p-12 text-center border border-gray-700">
-        <p class="text-gray-400 text-lg mb-4">Файлов пока нет</p>
-        <a href="/" class="inline-block bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-6 rounded-lg transition-colors">
-            Загрузить первый файл
-        </a>
-    </div>
-    {% endif %}
 </div>
 
 <script>
+    async function loadFiles() {
+        try {
+            const response = await fetch('/api/files');
+            const data = await response.json();
+            
+            const tbody = document.getElementById('filesTableBody');
+            if (!data.files || data.files.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="9" class="text-center text-gray-500 py-8">Файлов пока нет</td></tr>';
+                return;
+            }
+            
+            tbody.innerHTML = data.files.map(file => `
+                <tr class="hover:bg-gray-700 transition-colors ${file.has_parse_errors ? 'bg-red-900/20' : ''}">
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-300">${file.id}</td>
+                    <td class="px-6 py-4 text-sm text-white font-medium">
+                        ${file.filename}
+                        ${file.has_parse_errors ? '<span class="text-red-400 ml-2">⚠️ Ошибки</span>' : ''}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-400">${new Date(file.uploaded_at).toLocaleString('ru-RU')}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-green-400">${file.total_rows}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm ${file.problematic_rows > 0 ? 'text-yellow-400' : 'text-gray-500'}">
+                        ${file.problematic_rows}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm ${file.hard_duplicates > 0 ? 'text-red-400' : 'text-gray-500'}">
+                        ${file.hard_duplicates}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm ${file.combo_clusters > 0 ? 'text-yellow-400' : 'text-gray-500'}">
+                        ${file.combo_clusters}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm ${file.needs_review > 0 ? 'text-blue-400' : 'text-gray-500'}">
+                        ${file.needs_review}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm space-x-2">
+                        <a href="/ui/files/${file.id}" class="text-blue-400 hover:text-blue-300">Открыть</a>
+                        <button onclick="deleteFile(${file.id}, '${file.filename}')" class="text-red-400 hover:text-red-300">Удалить</button>
+                    </td>
+                </tr>
+            `).join('');
+        } catch (error) {
+            console.error('Ошибка загрузки файлов:', error);
+            document.getElementById('filesTableBody').innerHTML = '<tr><td colspan="9" class="text-center text-red-400 py-8">Ошибка загрузки данных</td></tr>';
+        }
+    }
+
     async function deleteFile(fileId, filename) {
         if (!confirm(`Удалить файл "${filename}"?\n\nЭто действие необратимо!`)) return;
         
@@ -70,7 +92,7 @@
             
             if (response.ok) {
                 alert('Файл удалён');
-                location.reload();
+                loadFiles();
             } else {
                 alert('Ошибка при удалении');
             }
@@ -78,5 +100,8 @@
             alert('Ошибка: ' + error.message);
         }
     }
+
+    // Загружаем файлы при загрузке страницы
+    loadFiles();
 </script>
 {% endblock %}
