@@ -16,6 +16,12 @@
         </button>
     </div>
 
+    <!-- Логи парсинга -->
+    <div id="parseLogsBlock" class="hidden bg-red-900/30 border border-red-500 rounded-lg p-4 mb-6">
+        <h2 class="text-lg font-bold text-red-400 mb-2">⚠️ Предупреждения при обработке файла</h2>
+        <div id="parseLogsList"></div>
+    </div>
+
     <!-- Статистика -->
     <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
         <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
@@ -35,8 +41,8 @@
             <div class="text-2xl font-bold text-yellow-400">{{ analysis.combo_clusters_count }}</div>
         </div>
         <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
-            <div class="text-gray-400 text-sm">📊 Кластеров</div>
-            <div class="text-2xl font-bold text-blue-400">{{ analysis.clusters_with_multiple_count }}</div>
+            <div class="text-gray-400 text-sm">🔵 Проверки</div>
+            <div class="text-2xl font-bold text-blue-400">{{ analysis.needs_review_count }}</div>
         </div>
     </div>
 
@@ -53,6 +59,9 @@
                 </button>
                 <button class="tab-btn py-4 px-4 font-semibold border-b-2 border-transparent text-gray-400 hover:text-white" data-tab="combo">
                     🟡 Комбо ({{ analysis.combo_clusters_count }})
+                </button>
+                <button class="tab-btn py-4 px-4 font-semibold border-b-2 border-transparent text-gray-400 hover:text-white" data-tab="review">
+                    🔵 Требует проверки ({{ analysis.needs_review_count }})
                 </button>
             </nav>
         </div>
@@ -84,6 +93,9 @@
                                 <span class="text-gray-400">Сумма:</span>
                                 <span class="text-green-400 font-semibold">{{ '{:,.2f}'.format(row.payout) if row.payout else '-' }} ₽</span>
                             </div>
+                        </div>
+                        <div class="mt-2 text-gray-300 text-sm">
+                            <span class="text-gray-400">👤 Монтажник:</span> {{ row.worker_name or '-' }}
                         </div>
                         <div class="mt-2 text-gray-300 text-sm">
                             <span class="text-gray-400">Исходный текст:</span> {{ row.raw_text or '-' }}
@@ -139,18 +151,20 @@
             <!-- Таб: Комбо -->
             <div id="tab-combo" class="tab-content hidden">
                 <div class="flex justify-between items-center mb-4">
-                    <h2 class="text-xl font-bold">Комбо (осмотр + монтаж)</h2>
+                    <h2 class="text-xl font-bold">Комбо (схожие адреса)</h2>
                     <a href="/api/files/{{ file_id }}/export/combo" class="text-blue-400 hover:text-blue-300">📥 Экспорт CSV</a>
                 </div>
-                <p class="text-gray-400 mb-4 text-sm">Нормальные случаи: сначала осмотр/диагностика, потом монтаж</p>
+                <p class="text-gray-400 mb-4 text-sm">Схожие адреса с разными заказами или типами работ</p>
                 
                 {% if analysis.combo_clusters_sample %}
                 <div class="space-y-4">
                     {% for combo in analysis.combo_clusters_sample %}
                     <div class="bg-gray-700 rounded-lg p-4 border border-yellow-500/30">
                         <div class="mb-3">
-                            <div class="font-bold text-white">{{ combo.order_number }}</div>
-                            <div class="text-gray-300 text-sm">{{ combo.address }}</div>
+                            <div class="text-gray-300 text-sm font-semibold">📍 {{ combo.address }}</div>
+                            {% if combo.order_numbers %}
+                                <div class="text-gray-400 text-sm">Заказы: {{ ', '.join(combo.order_numbers) }}</div>
+                            {% endif %}
                         </div>
                         <div class="space-y-2">
                             {% for row in combo.rows %}
@@ -164,6 +178,7 @@
                                             {% else %}❓ Другое{% endif %}
                                         </span>
                                         <span class="text-gray-400 ml-2">| 👤 {{ row.worker_name or '-' }}</span>
+                                        <span class="text-gray-400 ml-2">| Заказ: {{ row.order_number or '❌ Нет' }}</span>
                                     </div>
                                     <span class="text-green-400 font-bold">💰 {{ '{:,.2f}'.format(row.payout) if row.payout else '-' }} ₽</span>
                                 </div>
@@ -175,6 +190,49 @@
                 </div>
                 {% else %}
                 <p class="text-gray-500 text-center py-8">Комбо не найдено</p>
+                {% endif %}
+            </div>
+
+            <!-- Таб: Требует проверки -->
+            <div id="tab-review" class="tab-content hidden">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-bold">Требует проверки</h2>
+                    <a href="/api/files/{{ file_id }}/export/review" class="text-blue-400 hover:text-blue-300">📥 Экспорт CSV</a>
+                </div>
+                <p class="text-gray-400 mb-4 text-sm">Одинаковые номера заказов с разными адресами</p>
+                
+                {% if analysis.needs_review_sample %}
+                <div class="space-y-4">
+                    {% for review in analysis.needs_review_sample %}
+                    <div class="bg-gray-700 rounded-lg p-4 border border-blue-500/30">
+                        <div class="mb-3">
+                            <div class="font-bold text-white">Заказ: {{ review.order_number }}</div>
+                            <div class="text-yellow-400 text-sm">⚠️ Разные адреса для одного заказа!</div>
+                            <div class="text-gray-400 text-sm mt-2">Адреса:</div>
+                            <ul class="list-disc list-inside text-gray-300 text-sm ml-4">
+                                {% for addr in review.addresses %}
+                                <li>{{ addr }}</li>
+                                {% endfor %}
+                            </ul>
+                        </div>
+                        <div class="space-y-2">
+                            {% for row in review.rows %}
+                            <div class="bg-gray-600 rounded p-3 text-sm">
+                                <div class="flex justify-between items-center">
+                                    <div>
+                                        <span class="text-white">📍 {{ row.address or '❌ Нет' }}</span>
+                                        <span class="text-gray-400 ml-2">| 👤 {{ row.worker_name or '-' }}</span>
+                                    </div>
+                                    <span class="text-green-400 font-bold">💰 {{ '{:,.2f}'.format(row.payout) if row.payout else '-' }} ₽</span>
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <p class="text-gray-500 text-center py-8">✅ Заказов требующих проверки не найдено</p>
                 {% endif %}
             </div>
         </div>
@@ -190,25 +248,40 @@
         btn.addEventListener('click', () => {
             const tabName = btn.dataset.tab;
             
-            // Убираем активный класс со всех кнопок
             tabBtns.forEach(b => {
                 b.classList.remove('border-blue-500', 'text-blue-400');
                 b.classList.add('border-transparent', 'text-gray-400');
             });
             
-            // Добавляем активный класс текущей кнопке
             btn.classList.add('border-blue-500', 'text-blue-400');
             btn.classList.remove('border-transparent', 'text-gray-400');
             
-            // Скрываем все табы
             tabContents.forEach(content => {
                 content.classList.add('hidden');
             });
             
-            // Показываем нужный таб
             document.getElementById(`tab-${tabName}`).classList.remove('hidden');
         });
     });
+
+    // Загрузка логов парсинга
+    async function loadParseLogs() {
+        try {
+            const response = await fetch(`/api/files/{{ file_id }}/parse-logs`);
+            const data = await response.json();
+            
+            if (data.logs && data.logs.length > 0) {
+                document.getElementById('parseLogsBlock').classList.remove('hidden');
+                document.getElementById('parseLogsList').innerHTML = data.logs.map(log => `
+                    <div class="text-sm ${log.type === 'error' ? 'text-red-300' : 'text-yellow-300'} mb-1">
+                        <span class="font-mono text-xs text-gray-400">${log.created_at}</span> - ${log.message}
+                    </div>
+                `).join('');
+            }
+        } catch (error) {
+            console.error('Ошибка загрузки логов:', error);
+        }
+    }
 
     async function deleteFile() {
         if (!confirm('Удалить этот файл и все его записи?\n\nЭто действие необратимо!')) return;
@@ -228,5 +301,8 @@
             alert('Ошибка: ' + error.message);
         }
     }
+
+    // Вызываем при загрузке страницы
+    loadParseLogs();
 </script>
 {% endblock %}
