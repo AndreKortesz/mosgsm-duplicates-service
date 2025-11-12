@@ -414,3 +414,15 @@ async def upload_file(
         "hard_duplicates_sample": analysis["hard_duplicates_sample"],
         "combo_clusters_sample": analysis["combo_clusters_sample"],
     }
+
+@app.on_event("startup")
+def on_startup():
+    # Проверяем переменную окружения для сброса БД
+    if os.getenv("RESET_DB") == "true":
+        print("⚠️  RESET_DB=true - Удаление всех таблиц...")
+        Base.metadata.drop_all(bind=engine)
+        print("✅ Таблицы удалены")
+    
+    # Создаём таблицы заново
+    Base.metadata.create_all(bind=engine)
+    print("✅ Таблицы созданы")
