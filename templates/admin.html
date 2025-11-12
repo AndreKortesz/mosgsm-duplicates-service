@@ -24,10 +24,63 @@
                 Выполнить жёсткий сброс
             </button>
         </div>
+
+        <!-- Информация -->
+        <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
+            <h2 class="text-xl font-bold mb-2">ℹ️ Информация</h2>
+            <ul class="text-gray-400 space-y-2 text-sm">
+                <li>• <strong class="text-white">Мягкий сброс:</strong> Очищает данные, но таблицы остаются</li>
+                <li>• <strong class="text-white">Жёсткий сброс:</strong> Пересоздаёт всю базу данных с нуля</li>
+                <li>• <strong class="text-white">Оба действия необратимы!</strong></li>
+            </ul>
+        </div>
     </div>
 </div>
 
 <script>
     async function resetSoft() {
         if (!confirm('Вы уверены? Все файлы и записи будут удалены!\n\nЭто действие необратимо!')) return;
-        if (!confirm('Последнее предупреждение!
+        if (!confirm('Последнее предупреждение! Действительно удалить все данные?')) return;
+        
+        try {
+            const response = await fetch('/admin/reset/soft', {
+                method: 'POST'
+            });
+            
+            const data = await response.json();
+            
+            if (response.ok) {
+                alert('✅ ' + data.message);
+                window.location.href = '/ui/files';
+            } else {
+                alert('Ошибка: ' + (data.error || 'Неизвестная ошибка'));
+            }
+        } catch (error) {
+            alert('Ошибка: ' + error.message);
+        }
+    }
+
+    async function resetHard() {
+        if (!confirm('⚠️ ОПАСНО! Полностью пересоздать базу данных?\n\nВСЕ ДАННЫЕ БУДУТ ПОТЕРЯНЫ!')) return;
+        if (!confirm('Вы точно уверены? Это необратимо!')) return;
+        if (!confirm('Последний шанс передумать!')) return;
+        
+        try {
+            const response = await fetch('/admin/reset/hard', {
+                method: 'POST'
+            });
+            
+            const data = await response.json();
+            
+            if (response.ok) {
+                alert('✅ ' + data.message);
+                window.location.href = '/';
+            } else {
+                alert('Ошибка: ' + (data.error || 'Неизвестная ошибка'));
+            }
+        } catch (error) {
+            alert('Ошибка: ' + error.message);
+        }
+    }
+</script>
+{% endblock %}
