@@ -423,13 +423,3 @@ async def upload_file(
         "hard_duplicates_sample": analysis["hard_duplicates_sample"],
         "combo_clusters_sample": analysis["combo_clusters_sample"],
     }
-
-
-import os
-from main import Base, engine
-
-if os.getenv("RESET_DB") == "true":
-    print("⚠️ Очистка БД...")
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
-    print("✅ БД очищена.")
