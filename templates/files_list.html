@@ -15,15 +15,19 @@
     <div class="bg-gray-800 rounded-lg shadow-2xl border border-gray-700 overflow-hidden">
         <table class="w-full">
             <thead class="bg-gray-700">
-                <tr>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">ID</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Имя файла</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Дата загрузки</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Записей</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Проблемных</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Действия</th>
-                </tr>
-            </thead>
+<thead class="bg-gray-700">
+    <tr>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">ID</th>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Имя файла</th>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Дата</th>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Записей</th>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">⚠️ Проблем</th>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">🔴 Дублей</th>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">🟡 Комбо</th>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">🔵 Проверки</th>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Действия</th>
+    </tr>
+</thead>
             <tbody class="divide-y divide-gray-700">
                 {% for file in files %}
                 <tr class="hover:bg-gray-700 transition-colors">
