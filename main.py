@@ -581,12 +581,14 @@ async def api_export(
             OrderRow.is_problematic == True
         ).all()
         data = [row_short(r) for r in rows]
-    elif what in ["hard", "combo", "clusters"]:
+    elif what in ["hard", "combo", "clusters", "review"]:
         analysis = analyze_duplicates_for_file(db, file_id)
         if what == "hard":
             data = analysis["hard_duplicates_sample"]
         elif what == "combo":
             data = analysis["combo_clusters_sample"]
+        elif what == "review":
+            data = analysis["needs_review_sample"]
         else:
             data = []
     else:
