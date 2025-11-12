@@ -3,8 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}MOS-GSM Duplicate Checker{% endblock %}</title>
+    <title>{% block title %}Mos-GSM Duplicate Checker{% endblock %}</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="icon" type="image/png" href="/static/logo.png">
 </head>
 <body class="bg-gray-900 text-gray-100 min-h-screen">
     <!-- Навигация -->
@@ -12,7 +13,10 @@
         <div class="container mx-auto px-4 py-4">
             <div class="flex items-center justify-between">
                 <div class="flex items-center space-x-8">
-                    <a href="/ui/dashboard" class="text-xl font-bold text-blue-400">📊 MOS-GSM</a>
+                    <a href="/ui/dashboard" class="flex items-center space-x-3 hover:opacity-80 transition-opacity">
+                        <img src="/static/logo.png" alt="Mos-GSM" class="h-10 w-auto rounded-lg object-contain">
+                        <span class="text-xl font-bold text-blue-400">Mos-GSM</span>
+                    </a>
                     <a href="/ui/dashboard" class="text-gray-300 hover:text-white transition-colors">Дашборд</a>
                     <a href="/ui/files" class="text-gray-300 hover:text-white transition-colors">Файлы</a>
                     <a href="/" class="text-gray-300 hover:text-white transition-colors">Загрузить</a>
@@ -30,7 +34,7 @@
     <!-- Footer -->
     <footer class="bg-gray-800 border-t border-gray-700 mt-12">
         <div class="container mx-auto px-4 py-6 text-center text-gray-500 text-sm">
-            MOS-GSM Duplicate Checker © 2025
+            Mos-GSM Duplicate Checker © 2025
         </div>
     </footer>
 </body>
