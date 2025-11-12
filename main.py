@@ -454,56 +454,128 @@ async def upload_file(
     inserted_rows = 0
     problematic_rows = 0
     
-    # Находим колонки
-    order_col = None
-    for c in df.columns:
-        if "заказ" in str(c).lower() and "комментар" in str(c).lower():
-            order_col = c
-            break
-    if order_col is None:
-        possible_order_cols = [c for c in df.columns if "заказ" in str(c).lower()]
-        order_col = possible_order_cols[0] if possible_order_cols else None
+total_rows = 0
+    inserted_rows = 0
+    problematic_rows = 0
     
+    # ========== ПОИСК КОЛОНОК ==========
+    
+    print(f"\n{'='*60}")
+    print(f"🔍 АНАЛИЗ СТРУКТУРЫ ФАЙЛА")
+    print(f"{'='*60}")
+    print(f"Всего колонок: {len(df.columns)}")
+    
+    # Выводим все колонки для отладки
+    for idx, col in enumerate(df.columns):
+        print(f"  [{idx:2d}] {col}")
+    print(f"{'='*60}\n")
+    
+    # 1. Колонка заказа (первая колонка)
+    order_col = df.columns[0] if len(df.columns) > 0 else None
+    print(f"✓ Колонка заказа: [{0}] {order_col}")
+    
+    # 2. Колонка монтажника (та же, что и заказ)
+    worker_col = df.columns[0] if len(df.columns) > 0 else None
+    print(f"✓ Колонка монтажника: [{0}] {worker_col}")
+    
+    # 3. КОЛОНКА "ИТОГО" - основная сумма для анализа
     payout_col = None
-    for c in df.columns:
-        name = str(c).strip()
-        if name == "Итого" or "итого" in name.lower():
+    payout_col_idx = None
+    
+    # Сначала ищем по названию (исключая "Выручка итого")
+    for idx, c in enumerate(df.columns):
+        name = str(c).strip().lower()
+        if "итого" in name and "выручка" not in name:
             payout_col = c
+            payout_col_idx = idx
+            print(f"✓ Колонка 'Итого' найдена по имени: [{idx}] {c}")
             break
     
-    # DEBUG: Вывод колонок
-    print(f"🔍 DEBUG: Найдена колонка Итого: {payout_col}")
-    print(f"🔍 DEBUG: Все колонки: {list(df.columns)}")
+    # Если не нашли по имени, ищем по индексам (пробуем 16-20)
+    if payout_col is None:
+        for idx in [18, 17, 19, 16, 20, 15]:
+            if idx < len(df.columns):
+                col_name = str(df.columns[idx]).strip()
+                print(f"  Проверяем [{idx}]: {col_name}")
+                if "итого" in col_name.lower() and "выручка" not in col_name.lower():
+                    payout_col = df.columns[idx]
+                    payout_col_idx = idx
+                    print(f"✓ Колонка 'Итого' найдена по индексу: [{idx}] {df.columns[idx]}")
+                    break
     
-    worker_col = None
-    for c in df.columns:
-        name = str(c).lower()
-        if "монтажник" in name or "фио" in name or "исполнитель" in name:
-            worker_col = c
-            break
-    if worker_col is None and len(df.columns) > 0:
-        worker_col = df.columns[0]
+    if payout_col is None:
+        print("⚠️ ВНИМАНИЕ: Колонка 'Итого' не найдена!")
     
+    # 4. КОЛОНКА "ДИАГНОСТИКА" или "ОПЛАТА ДИАГНОСТИКИ"
     diagnostic_col = None
-    for c in df.columns:
+    diagnostic_col_idx = None
+    
+    # Ищем по названию
+    for idx, c in enumerate(df.columns):
         name = str(c).lower()
         if "диагност" in name:
             diagnostic_col = c
+            diagnostic_col_idx = idx
+            print(f"✓ Колонка диагностики: [{idx}] {c}")
             break
     
+    # Если не нашли, пробуем по индексам (обычно 4 или 5)
+    if diagnostic_col is None:
+        for idx in [4, 5, 3, 6]:
+            if idx < len(df.columns):
+                col_name = str(df.columns[idx]).lower()
+                if "диагност" in col_name:
+                    diagnostic_col = df.columns[idx]
+                    diagnostic_col_idx = idx
+                    print(f"✓ Колонка диагностики найдена по индексу: [{idx}] {df.columns[idx]}")
+                    break
+    
+    if diagnostic_col is None:
+        print("⚠️ ВНИМАНИЕ: Колонка 'Диагностика' не найдена!")
+    
+    # 5. КОЛОНКА "ВЫРУЧКА (ВЫЕЗД) СПЕЦИАЛИСТА"
     inspection_col = None
-    for c in df.columns:
+    inspection_col_idx = None
+    
+    # Ищем по названию
+    for idx, c in enumerate(df.columns):
         name = str(c).lower()
-        if ("выручка" in name and "выезд" in name and "специалист" in name) or \
-           (name == "выручка (выезд) специалиста"):
+        # Ищем точное совпадение с "выезд" + "специалист"
+        if "выезд" in name and "специалист" in name:
             inspection_col = c
+            inspection_col_idx = idx
+            print(f"✓ Колонка осмотра (выезд специалиста): [{idx}] {c}")
             break
     
+    # Если не нашли, пробуем по индексам (обычно 6 или 7)
+    if inspection_col is None:
+        for idx in [6, 7, 5, 8]:
+            if idx < len(df.columns):
+                col_name = str(df.columns[idx]).lower()
+                if "выезд" in col_name and "специалист" in col_name:
+                    inspection_col = df.columns[idx]
+                    inspection_col_idx = idx
+                    print(f"✓ Колонка осмотра найдена по индексу: [{idx}] {df.columns[idx]}")
+                    break
+    
+    if inspection_col is None:
+        print("⚠️ ВНИМАНИЕ: Колонка 'Выручка (выезд) специалиста' не найдена!")
+    
+    # 6. Колонка комментариев
     comment_col = None
-    for c in df.columns:
+    for idx, c in enumerate(df.columns):
         if "коммент" in str(c).lower():
             comment_col = c
+            print(f"✓ Колонка комментариев: [{idx}] {c}")
             break
+    
+    print(f"\n{'='*60}")
+    print(f"ИТОГО: Найдено колонок для анализа:")
+    print(f"  - Заказ: {'✓' if order_col else '✗'}")
+    print(f"  - Итого: {'✓' if payout_col else '✗'}")
+    print(f"  - Диагностика: {'✓' if diagnostic_col else '✗'}")
+    print(f"  - Осмотр (выезд): {'✓' if inspection_col else '✗'}")
+    print(f"{'='*60}\n")
     
     # Обрабатываем строки
     for idx, row in df.iterrows():
@@ -541,29 +613,58 @@ async def upload_file(
                 except Exception:
                     payout_val = None
         
+# Суммы для определения типа работы
         diag_sum = 0.0
-        if diagnostic_col and pd.notna(row.get(diagnostic_col)):
+        if diagnostic_col is not None and pd.notna(row.get(diagnostic_col)):
             try:
-                val = str(row.get(diagnostic_col)).replace(" ", "").replace(",", ".")
+                raw_val = row.get(diagnostic_col)
+                if isinstance(raw_val, str):
+                    val = raw_val.replace(" ", "").replace(",", ".")
+                else:
+                    val = str(raw_val)
                 diag_sum = float(val)
-            except Exception:
+                if diag_sum > 0:
+                    print(f"  💰 Диагностика: {diag_sum} ₽ (заказ: {order_number})")
+            except Exception as e:
+                print(f"  ⚠️ Ошибка парсинга диагностики: {e}")
                 diag_sum = 0.0
         
         insp_sum = 0.0
-        if inspection_col and pd.notna(row.get(inspection_col)):
+        if inspection_col is not None and pd.notna(row.get(inspection_col)):
             try:
-                val = str(row.get(inspection_col)).replace(" ", "").replace(",", ".")
+                raw_val = row.get(inspection_col)
+                if isinstance(raw_val, str):
+                    val = raw_val.replace(" ", "").replace(",", ".")
+                else:
+                    val = str(raw_val)
                 insp_sum = float(val)
-            except Exception:
+                if insp_sum > 0:
+                    print(f"  👁️  Осмотр (выезд): {insp_sum} ₽ (заказ: {order_number})")
+            except Exception as e:
+                print(f"  ⚠️ Ошибка парсинга осмотра: {e}")
                 insp_sum = 0.0
         
-        work_type = "other"
+        # DEBUG: Показываем извлечённую сумму из "Итого"
+        if payout_val and payout_val > 0:
+            print(f"  💵 Итого: {payout_val} ₽ (заказ: {order_number})")
+        
+        # Определяем тип работы (ВАЖНО: порядок имеет значение!)
+        work_type = "other"  # по умолчанию
+        
+        # 1. Если есть диагностика > 0 → diagnostic
         if diag_sum > 0:
             work_type = "diagnostic"
+            print(f"  ➜ Тип работы: ДИАГНОСТИКА")
+        # 2. Если есть выезд специалиста > 0 → inspection
         elif insp_sum > 0:
             work_type = "inspection"
+            print(f"  ➜ Тип работы: ОСМОТР")
+        # 3. Если "Итого" > 5000 → installation
         elif payout_val is not None and payout_val > 5000:
             work_type = "installation"
+            print(f"  ➜ Тип работы: МОНТАЖ (Итого > 5000)")
+        else:
+            print(f"  ➜ Тип работы: ДРУГОЕ")
         
         worker_name = None
         if worker_col and pd.notna(row.get(worker_col)):
