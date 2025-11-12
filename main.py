@@ -61,8 +61,17 @@ class OrderRow(Base):
     comment = Column(Text)
     parsed_ok = Column(Boolean, default=False)
     is_problematic = Column(Boolean, default=False)
+    parse_errors = Column(Text)  # <-- НОВОЕ ПОЛЕ для ошибок парсинга
     created_at = Column(DateTime, default=datetime.utcnow)
     file = relationship("File", back_populates="orders")
+
+class FileParseLog(Base):
+    __tablename__ = "file_parse_logs"
+    id = Column(Integer, primary_key=True, index=True)
+    file_id = Column(Integer, ForeignKey("files.id"), nullable=False)
+    log_type = Column(String)  # warning, error, info
+    message = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 # ========== Инициализация БД ==========
 @app.on_event("startup")
@@ -197,85 +206,134 @@ def row_short(r: OrderRow) -> dict:
         "raw_text": r.raw_text[:100] if r.raw_text else "",
     }
 
-def analyze_duplicates_for_file(db: Session, file_id: int) -> dict:
-    """Анализ с учётом проблемных строк"""
-    all_orders: list[OrderRow] = (
-        db.query(OrderRow)
-        .filter(
-            OrderRow.order_number.isnot(None),
-            OrderRow.address.isnot(None),
-        )
-        .all()
-    )
+def analyze_duplicates_for_file(db: Session, file_id: int = None) -> dict:
+    """
+    Анализ дублей и комбо по ВСЕЙ базе или по конкретному файлу.
     
-    clusters = defaultdict(list)
-    for r in all_orders:
-        key = (
-            r.order_number.strip().upper(),
-            normalize_text(r.address)
-        )
-        clusters[key].append(r)
+    НОВАЯ ЛОГИКА:
+    1. Схожие адреса (даже без номера заказа) = КОМБО
+    2. Одинаковые заказы с разными адресами = ТРЕБУЕТ ПРОВЕРКИ
+    3. Одинаковый заказ + адрес + тип работы (2+) = ЖЁСТКИЙ ДУБЛЬ
+    """
     
+    # Получаем все заказы (или только из конкретного файла)
+    query = db.query(OrderRow)
+    if file_id:
+        query = query.filter(OrderRow.file_id == file_id)
+    
+    all_orders: list[OrderRow] = query.all()
+    
+    # === 1. ЖЁСТКИЕ ДУБЛИ: одинаковый заказ + адрес + тип работы ===
     hard_duplicates = []
-    combo_clusters = []
-    clusters_with_multiple = []
+    clusters_by_order_address = defaultdict(list)
     
-    for (order_number, normalized_address), rows in clusters.items():
+    for r in all_orders:
+        if r.order_number and r.address:
+            key = (
+                r.order_number.strip().upper(),
+                normalize_text(r.address)
+            )
+            clusters_by_order_address[key].append(r)
+    
+    for (order_number, normalized_address), rows in clusters_by_order_address.items():
         if len(rows) < 2:
             continue
         
-        original_address = rows[0].address
-        clusters_with_multiple.append((order_number, original_address, rows))
-        
         by_type = defaultdict(list)
-        has_diag_or_insp = False
-        has_install = False
-        
         for r in rows:
             by_type[r.work_type].append(r)
-            if r.work_type in ("diagnostic", "inspection"):
-                has_diag_or_insp = True
-            if r.work_type == "installation":
-                has_install = True
         
+        # Если 2+ записи с одним типом работы - жёсткий дубль
         for wt, items in by_type.items():
             if len(items) >= 2:
                 hard_duplicates.append({
                     "order_number": order_number,
-                    "address": original_address,
+                    "address": rows[0].address,
                     "work_type": wt,
                     "rows": [row_short(r) for r in items],
                 })
+    
+    # === 2. КОМБО: схожие адреса (разные заказы или без заказов) ===
+    combo_clusters = []
+    clusters_by_address = defaultdict(list)
+    
+    # Группируем ВСЕ строки по нормализованному адресу
+    for r in all_orders:
+        if r.address:
+            norm_addr = normalize_text(r.address)
+            if len(norm_addr) > 5:  # Игнорируем слишком короткие адреса
+                clusters_by_address[norm_addr].append(r)
+    
+    for norm_addr, rows in clusters_by_address.items():
+        if len(rows) < 2:
+            continue
         
-        if has_diag_or_insp and has_install:
+        # Проверяем типы работ в кластере
+        work_types = set(r.work_type for r in rows)
+        order_numbers = set(r.order_number for r in rows if r.order_number)
+        
+        # Если это не жёсткий дубль (разные заказы ИЛИ разные типы работ)
+        # ИЛИ вообще нет номера в одной из строк
+        is_hard_duplicate = (
+            len(order_numbers) == 1 and 
+            len(work_types) == 1 and 
+            len(rows) >= 2
+        )
+        
+        if not is_hard_duplicate:
             combo_clusters.append({
-                "order_number": order_number,
-                "address": original_address,
+                "address": rows[0].address,
+                "order_numbers": list(order_numbers),
+                "work_types": list(work_types),
                 "rows": [row_short(r) for r in rows],
             })
     
-    # Проблемные строки
-    problematic_orders = (
-        db.query(OrderRow)
-        .filter(OrderRow.file_id == file_id, OrderRow.is_problematic == True)
-        .all()
-    )
+    # === 3. ТРЕБУЕТ ПРОВЕРКИ: одинаковые номера заказов с РАЗНЫМИ адресами ===
+    needs_review = []
+    clusters_by_order = defaultdict(list)
+    
+    for r in all_orders:
+        if r.order_number:
+            clusters_by_order[r.order_number.strip().upper()].append(r)
+    
+    for order_num, rows in clusters_by_order.items():
+        if len(rows) < 2:
+            continue
+        
+        # Получаем уникальные адреса
+        addresses = set(normalize_text(r.address) for r in rows if r.address)
+        
+        # Если адресов больше одного - требует проверки
+        if len(addresses) > 1:
+            needs_review.append({
+                "order_number": order_num,
+                "addresses": [r.address for r in rows if r.address],
+                "rows": [row_short(r) for r in rows],
+            })
+    
+    # === 4. ПРОБЛЕМНЫЕ СТРОКИ ===
+    problematic_query = db.query(OrderRow).filter(OrderRow.is_problematic == True)
+    if file_id:
+        problematic_query = problematic_query.filter(OrderRow.file_id == file_id)
+    
+    problematic_orders = problematic_query.all()
     
     return {
-        "clusters_with_multiple_count": len(clusters_with_multiple),
         "hard_duplicates_count": len(hard_duplicates),
         "combo_clusters_count": len(combo_clusters),
+        "needs_review_count": len(needs_review),
         "problematic_count": len(problematic_orders),
-        "hard_duplicates_sample": hard_duplicates[:30],
-        "combo_clusters_sample": combo_clusters[:30],
-        "problematic_sample": [row_short(r) for r in problematic_orders[:30]],
+        "hard_duplicates_sample": hard_duplicates[:50],
+        "combo_clusters_sample": combo_clusters[:50],
+        "needs_review_sample": needs_review[:50],
+        "problematic_sample": [row_short(r) for r in problematic_orders[:50]],
     }
 
 # ========== API Эндпоинты ==========
 
 @app.get("/api/files")
 async def api_get_files(db: Session = Depends(get_db)):
-    """Список всех файлов"""
+    """Список всех файлов с расширенной статистикой"""
     files = db.query(File).order_by(desc(File.uploaded_at)).all()
     
     result = []
@@ -286,12 +344,25 @@ async def api_get_files(db: Session = Depends(get_db)):
             OrderRow.is_problematic == True
         ).count()
         
+        # Получаем статистику дублей для этого файла
+        analysis = analyze_duplicates_for_file(db, f.id)
+        
+        # Проверяем есть ли ошибки парсинга
+        has_parse_errors = db.query(FileParseLog).filter(
+            FileParseLog.file_id == f.id,
+            FileParseLog.log_type == "error"
+        ).count() > 0
+        
         result.append({
             "id": f.id,
             "filename": f.filename,
             "uploaded_at": f.uploaded_at.isoformat(),
             "total_rows": total_rows,
             "problematic_rows": problematic,
+            "hard_duplicates": analysis["hard_duplicates_count"],
+            "combo_clusters": analysis["combo_clusters_count"],
+            "needs_review": analysis["needs_review_count"],
+            "has_parse_errors": has_parse_errors,
         })
     
     return {"files": result}
@@ -312,6 +383,131 @@ async def api_get_file(file_id: int, db: Session = Depends(get_db)):
         "uploaded_at": file.uploaded_at.isoformat(),
         "total_rows": total_rows,
         "analysis": analysis,
+    }
+
+@app.get("/api/search")
+async def api_search(
+    query: str = Query(..., min_length=1),
+    db: Session = Depends(get_db)
+):
+    """
+    Глобальный поиск по всем файлам.
+    Ищет по: номеру заказа, адресу, сумме, монтажнику, исходному тексту.
+    """
+    if not query or len(query.strip()) < 1:
+        return {"results": [], "total": 0}
+    
+    q = query.strip()
+    
+    # Ищем по всем полям
+    search_query = db.query(OrderRow).filter(
+        (OrderRow.order_number.ilike(f"%{q}%")) |
+        (OrderRow.address.ilike(f"%{q}%")) |
+        (OrderRow.worker_name.ilike(f"%{q}%")) |
+        (OrderRow.raw_text.ilike(f"%{q}%")) |
+        (OrderRow.comment.ilike(f"%{q}%"))
+    )
+    
+    # Если это число, ищем по сумме
+    try:
+        amount = float(q.replace(",", ".").replace(" ", ""))
+        search_query = search_query.union(
+            db.query(OrderRow).filter(OrderRow.payout == amount)
+        )
+    except ValueError:
+        pass
+    
+    results = search_query.limit(100).all()
+    
+    # Группируем результаты по файлам
+    by_file = defaultdict(list)
+    for r in results:
+        by_file[r.file_id].append(row_short(r))
+    
+    # Получаем информацию о файлах
+    files_info = {}
+    for file_id in by_file.keys():
+        f = db.query(File).filter(File.id == file_id).first()
+        if f:
+            files_info[file_id] = {
+                "id": f.id,
+                "filename": f.filename,
+                "uploaded_at": f.uploaded_at.strftime("%d.%m.%Y %H:%M"),
+            }
+    
+    return {
+        "query": q,
+        "total": len(results),
+        "by_file": [
+            {
+                "file": files_info.get(fid, {}),
+                "results": rows
+            }
+            for fid, rows in by_file.items()
+        ]
+    }
+
+@app.get("/api/dashboard/all")
+async def api_dashboard_all(db: Session = Depends(get_db)):
+    """
+    Общий дашборд: статистика по ВСЕМ файлам вместе
+    """
+    total_files = db.query(File).count()
+    total_orders = db.query(OrderRow).count()
+    
+    # Анализ по всем файлам
+    analysis = analyze_duplicates_for_file(db, file_id=None)
+    
+    # Статистика по типам работ
+    work_types_count = {}
+    for wt in ["diagnostic", "inspection", "installation", "other"]:
+        count = db.query(OrderRow).filter(OrderRow.work_type == wt).count()
+        work_types_count[wt] = count
+    
+    # Топ монтажников по количеству заказов
+    from sqlalchemy import func
+    top_workers = (
+        db.query(OrderRow.worker_name, func.count(OrderRow.id).label('count'))
+        .filter(OrderRow.worker_name.isnot(None))
+        .group_by(OrderRow.worker_name)
+        .order_by(func.count(OrderRow.id).desc())
+        .limit(10)
+        .all()
+    )
+    
+    return {
+        "total_files": total_files,
+        "total_orders": total_orders,
+        "hard_duplicates_count": analysis["hard_duplicates_count"],
+        "combo_clusters_count": analysis["combo_clusters_count"],
+        "needs_review_count": analysis["needs_review_count"],
+        "problematic_count": analysis["problematic_count"],
+        "work_types": work_types_count,
+        "top_workers": [{"name": w[0], "count": w[1]} for w in top_workers],
+        "analysis": analysis,
+    }
+
+@app.get("/api/files/{file_id}/parse-logs")
+async def api_get_parse_logs(file_id: int, db: Session = Depends(get_db)):
+    """Получить логи парсинга файла"""
+    logs = (
+        db.query(FileParseLog)
+        .filter(FileParseLog.file_id == file_id)
+        .order_by(FileParseLog.created_at.desc())
+        .all()
+    )
+    
+    return {
+        "file_id": file_id,
+        "logs": [
+            {
+                "id": log.id,
+                "type": log.log_type,
+                "message": log.message,
+                "created_at": log.created_at.strftime("%d.%m.%Y %H:%M:%S"),
+            }
+            for log in logs
+        ]
     }
 
 @app.get("/api/files/{file_id}/rows")
@@ -510,6 +706,24 @@ async def upload_file(
     
     if payout_col is None:
         print("⚠️ ВНИМАНИЕ: Колонка 'Итого' не найдена!")
+
+    if payout_col is None:
+        msg = "⚠️ ВНИМАНИЕ: Колонка 'Итого' не найдена!"
+        print(msg)
+        log_entry = FileParseLog(file_id=db_file.id, log_type="warning", message=msg)
+        db.add(log_entry)
+    
+    if diagnostic_col is None:
+        msg = "⚠️ ВНИМАНИЕ: Колонка 'Диагностика' не найдена!"
+        print(msg)
+        log_entry = FileParseLog(file_id=db_file.id, log_type="warning", message=msg)
+        db.add(log_entry)
+    
+    if inspection_col is None:
+        msg = "⚠️ ВНИМАНИЕ: Колонка 'Выручка (выезд) специалиста' не найдена!"
+        print(msg)
+        log_entry = FileParseLog(file_id=db_file.id, log_type="warning", message=msg)
+        db.add(log_entry)
     
     # 4. КОЛОНКА "ДИАГНОСТИКА" или "ОПЛАТА ДИАГНОСТИКИ"
     diagnostic_col = None
