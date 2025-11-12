@@ -437,24 +437,29 @@ async def upload_file(
     content = await file.read()
     
     try:
-        df = pd.read_excel(io.BytesIO(content), header=6)
+        # Читаем Excel, пропуская первые 5 строк (параметры)
+        df = pd.read_excel(io.BytesIO(content), header=5)
+        
+        # Очищаем названия колонок
         df.columns = [str(col).strip() if col is not None else "" for col in df.columns]
+        
+        print(f"🔍 DEBUG: Всего колонок: {len(df.columns)}")
+        print(f"🔍 DEBUG: Первые 5 колонок: {list(df.columns[:5])}")
+        print(f"🔍 DEBUG: Последние 5 колонок: {list(df.columns[-5:])}")
+        
     except Exception as e:
         return JSONResponse(
             status_code=400,
             content={"error": f"Не удалось прочитать Excel: {str(e)}"},
         )
     
+    # Создаём запись о файле
     db_file = File(filename=file.filename)
     db.add(db_file)
     db.commit()
     db.refresh(db_file)
     
     total_rows = 0
-    inserted_rows = 0
-    problematic_rows = 0
-    
-total_rows = 0
     inserted_rows = 0
     problematic_rows = 0
     
@@ -613,7 +618,7 @@ total_rows = 0
                 except Exception:
                     payout_val = None
         
-# Суммы для определения типа работы
+        # Суммы для определения типа работы
         diag_sum = 0.0
         if diagnostic_col is not None and pd.notna(row.get(diagnostic_col)):
             try:
@@ -649,17 +654,14 @@ total_rows = 0
             print(f"  💵 Итого: {payout_val} ₽ (заказ: {order_number})")
         
         # Определяем тип работы (ВАЖНО: порядок имеет значение!)
-        work_type = "other"  # по умолчанию
+        work_type = "other"
         
-        # 1. Если есть диагностика > 0 → diagnostic
         if diag_sum > 0:
             work_type = "diagnostic"
             print(f"  ➜ Тип работы: ДИАГНОСТИКА")
-        # 2. Если есть выезд специалиста > 0 → inspection
         elif insp_sum > 0:
             work_type = "inspection"
             print(f"  ➜ Тип работы: ОСМОТР")
-        # 3. Если "Итого" > 5000 → installation
         elif payout_val is not None and payout_val > 5000:
             work_type = "installation"
             print(f"  ➜ Тип работы: МОНТАЖ (Итого > 5000)")
@@ -680,7 +682,6 @@ total_rows = 0
         is_problematic = False
         parsed_ok = True
         
-        # Если нет номера ИЛИ нет адреса - проблемная строка
         if not order_number or not address:
             is_problematic = True
             parsed_ok = False
