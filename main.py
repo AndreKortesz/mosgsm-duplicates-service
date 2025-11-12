@@ -832,25 +832,41 @@ async def upload_file(
             if pd.notna(raw):
                 try:
                     if isinstance(raw, str):
-                        cleaned = raw.replace(" ", "").replace(",", ".")
-                        payout_val = float(cleaned)
+                        # Убираем все пробелы, заменяем запятую на точку
+                        cleaned = str(raw).replace(" ", "").replace(",", ".").replace("\xa0", "")
+                        # Убираем все нечисловые символы кроме точки и минуса
+                        cleaned = ''.join(c for c in cleaned if c.isdigit() or c in '.-')
+                        if cleaned and cleaned not in ['.', '-', '-.']:
+                            payout_val = float(cleaned)
                     else:
                         payout_val = float(raw)
-                except Exception:
+                except Exception as e:
+                    print(f"  ⚠️ Ошибка парсинга суммы: {raw} -> {e}")
                     payout_val = None
+                    # Логируем ошибку в БД
+                    if 'db_file' in locals():
+                        log_entry = FileParseLog(
+                            file_id=db_file.id, 
+                            log_type="warning", 
+                            message=f"Не удалось распарсить сумму: {raw}"
+                        )
+                        db.add(log_entry)
         
         # Суммы для определения типа работы
+# Суммы для определения типа работы
         diag_sum = 0.0
         if diagnostic_col is not None and pd.notna(row.get(diagnostic_col)):
             try:
                 raw_val = row.get(diagnostic_col)
                 if isinstance(raw_val, str):
-                    val = raw_val.replace(" ", "").replace(",", ".")
+                    val = str(raw_val).replace(" ", "").replace(",", ".").replace("\xa0", "")
+                    val = ''.join(c for c in val if c.isdigit() or c in '.-')
                 else:
                     val = str(raw_val)
-                diag_sum = float(val)
-                if diag_sum > 0:
-                    print(f"  💰 Диагностика: {diag_sum} ₽ (заказ: {order_number})")
+                if val and val not in ['.', '-', '-.']:
+                    diag_sum = float(val)
+                    if diag_sum > 0:
+                        print(f"  💰 Диагностика: {diag_sum} ₽ (заказ: {order_number})")
             except Exception as e:
                 print(f"  ⚠️ Ошибка парсинга диагностики: {e}")
                 diag_sum = 0.0
@@ -860,12 +876,14 @@ async def upload_file(
             try:
                 raw_val = row.get(inspection_col)
                 if isinstance(raw_val, str):
-                    val = raw_val.replace(" ", "").replace(",", ".")
+                    val = str(raw_val).replace(" ", "").replace(",", ".").replace("\xa0", "")
+                    val = ''.join(c for c in val if c.isdigit() or c in '.-')
                 else:
                     val = str(raw_val)
-                insp_sum = float(val)
-                if insp_sum > 0:
-                    print(f"  👁️  Осмотр (выезд): {insp_sum} ₽ (заказ: {order_number})")
+                if val and val not in ['.', '-', '-.']:
+                    insp_sum = float(val)
+                    if insp_sum > 0:
+                        print(f"  👁️  Осмотр (выезд): {insp_sum} ₽ (заказ: {order_number})")
             except Exception as e:
                 print(f"  ⚠️ Ошибка парсинга осмотра: {e}")
                 insp_sum = 0.0
