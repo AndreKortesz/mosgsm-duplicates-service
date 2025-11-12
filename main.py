@@ -23,7 +23,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship, Session
 
 # ========== Настройки приложения ==========
-app = FastAPI(title="MOS-GSM Duplicate Checker")
+app = FastAPI(title="Mos-GSM Duplicate Checker")
 
 # Создаем директорию для шаблонов
 os.makedirs("templates", exist_ok=True)
