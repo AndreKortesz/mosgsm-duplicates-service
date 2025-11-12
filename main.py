@@ -4,8 +4,9 @@ import re
 from datetime import datetime
 from collections import defaultdict
 import pandas as pd
-from fastapi import FastAPI, UploadFile, File as FastAPIFile, Depends
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, UploadFile, File as FastAPIFile, Depends, Request
+from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import (
     create_engine,
     Column,
@@ -21,6 +22,217 @@ from sqlalchemy.orm import declarative_base, sessionmaker, relationship, Session
 
 # ========== Настройки приложения ==========
 app = FastAPI(title="MOS-GSM Duplicate Checker")
+
+# Создаем директорию для статических файлов если её нет
+os.makedirs("static", exist_ok=True)
+
+# HTML шаблон главной страницы
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MOS-GSM Duplicate Checker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 min-h-screen">
+    <div class="container mx-auto px-4 py-8 max-w-6xl">
+        <!-- Шапка -->
+        <div class="bg-gray-800 rounded-lg shadow-2xl p-6 mb-6 border border-gray-700">
+            <h1 class="text-3xl font-bold text-white mb-2">📊 MOS-GSM Duplicate Checker</h1>
+            <p class="text-gray-400">Система проверки дублирующих выплат монтажникам</p>
+        </div>
+
+        <!-- Блок загрузки -->
+        <div class="bg-gray-800 rounded-lg shadow-2xl p-6 mb-6 border border-gray-700">
+            <h2 class="text-xl font-semibold text-white mb-4">📁 Загрузить Excel файл</h2>
+            
+            <div class="border-2 border-dashed border-gray-600 rounded-lg p-8 text-center hover:border-blue-500 transition-colors">
+                <input type="file" id="fileInput" accept=".xlsx,.xls" class="hidden">
+                <label for="fileInput" class="cursor-pointer">
+                    <div class="text-gray-400 mb-2">
+                        <svg class="w-16 h-16 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+                        </svg>
+                    </div>
+                    <span class="text-blue-400 font-semibold">Нажмите для выбора файла</span>
+                    <p class="text-gray-500 text-sm mt-2">или перетащите файл сюда</p>
+                </label>
+            </div>
+
+            <button id="uploadBtn" class="mt-4 w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-6 rounded-lg transition-colors disabled:bg-gray-600 disabled:cursor-not-allowed">
+                Загрузить и проверить
+            </button>
+
+            <div id="progress" class="hidden mt-4">
+                <div class="bg-gray-700 rounded-full h-2 overflow-hidden">
+                    <div class="bg-blue-500 h-full animate-pulse" style="width: 100%"></div>
+                </div>
+                <p class="text-center text-gray-400 mt-2">Обработка файла...</p>
+            </div>
+        </div>
+
+        <!-- Результаты -->
+        <div id="results" class="hidden">
+            <!-- Общая статистика -->
+            <div class="bg-gray-800 rounded-lg shadow-2xl p-6 mb-6 border border-gray-700">
+                <h2 class="text-xl font-semibold text-white mb-4">📈 Статистика</h2>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div class="bg-gray-700 rounded-lg p-4">
+                        <div class="text-gray-400 text-sm">Всего строк</div>
+                        <div class="text-2xl font-bold text-white" id="totalRows">-</div>
+                    </div>
+                    <div class="bg-gray-700 rounded-lg p-4">
+                        <div class="text-gray-400 text-sm">Сохранено</div>
+                        <div class="text-2xl font-bold text-green-400" id="savedRows">-</div>
+                    </div>
+                    <div class="bg-gray-700 rounded-lg p-4">
+                        <div class="text-gray-400 text-sm">Проблемных</div>
+                        <div class="text-2xl font-bold text-yellow-400" id="problematicRows">-</div>
+                    </div>
+                    <div class="bg-gray-700 rounded-lg p-4">
+                        <div class="text-gray-400 text-sm">Дублей</div>
+                        <div class="text-2xl font-bold text-red-400" id="duplicatesCount">-</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Жесткие дубли -->
+            <div id="hardDuplicatesBlock" class="bg-gray-800 rounded-lg shadow-2xl p-6 mb-6 border border-red-500">
+                <h2 class="text-xl font-semibold text-red-400 mb-4">🔴 Жесткие дубли (риск переплаты)</h2>
+                <div id="hardDuplicatesList"></div>
+            </div>
+
+            <!-- Комбо -->
+            <div id="comboBlock" class="bg-gray-800 rounded-lg shadow-2xl p-6 mb-6 border border-yellow-500">
+                <h2 class="text-xl font-semibold text-yellow-400 mb-4">🟡 Комбо (осмотр + монтаж)</h2>
+                <div id="comboList"></div>
+            </div>
+
+            <!-- Проблемные строки -->
+            <div id="problematicBlock" class="bg-gray-800 rounded-lg shadow-2xl p-6 border border-gray-600">
+                <h2 class="text-xl font-semibold text-gray-400 mb-4">⚠️ Проблемные строки</h2>
+                <p class="text-gray-500 text-sm">Строки без номера заказа или адреса</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const fileInput = document.getElementById('fileInput');
+        const uploadBtn = document.getElementById('uploadBtn');
+        const progress = document.getElementById('progress');
+        const results = document.getElementById('results');
+
+        let selectedFile = null;
+
+        fileInput.addEventListener('change', (e) => {
+            selectedFile = e.target.files[0];
+            if (selectedFile) {
+                uploadBtn.disabled = false;
+                uploadBtn.textContent = `Загрузить: ${selectedFile.name}`;
+            }
+        });
+
+        uploadBtn.addEventListener('click', async () => {
+            if (!selectedFile) return;
+
+            const formData = new FormData();
+            formData.append('file', selectedFile);
+
+            uploadBtn.disabled = true;
+            progress.classList.remove('hidden');
+            results.classList.add('hidden');
+
+            try {
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+                
+                progress.classList.add('hidden');
+                uploadBtn.disabled = false;
+                uploadBtn.textContent = 'Загрузить и проверить';
+                
+                displayResults(data);
+            } catch (error) {
+                alert('Ошибка при загрузке: ' + error.message);
+                progress.classList.add('hidden');
+                uploadBtn.disabled = false;
+            }
+        });
+
+        function displayResults(data) {
+            results.classList.remove('hidden');
+
+            // Статистика
+            document.getElementById('totalRows').textContent = data.total_rows_in_file;
+            document.getElementById('savedRows').textContent = data.saved_rows;
+            document.getElementById('problematicRows').textContent = data.problematic_rows;
+            document.getElementById('duplicatesCount').textContent = data.hard_duplicates_count;
+
+            // Жесткие дубли
+            const hardDuplicatesList = document.getElementById('hardDuplicatesList');
+            if (data.hard_duplicates_sample && data.hard_duplicates_sample.length > 0) {
+                hardDuplicatesList.innerHTML = data.hard_duplicates_sample.map(dup => `
+                    <div class="bg-gray-700 rounded-lg p-4 mb-3">
+                        <div class="text-white font-semibold mb-2">
+                            ${dup.order_number} - ${dup.address}
+                        </div>
+                        <div class="text-sm text-gray-400 mb-2">Тип: ${translateWorkType(dup.work_type)}</div>
+                        <div class="space-y-1">
+                            ${dup.rows.map(row => `
+                                <div class="text-sm text-gray-300 bg-gray-600 rounded p-2">
+                                    💰 ${row.payout ? row.payout.toFixed(2) + ' ₽' : 'Нет суммы'} | 
+                                    👤 ${row.worker_name || 'Нет имени'}
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `).join('');
+            } else {
+                hardDuplicatesList.innerHTML = '<p class="text-gray-500">Жестких дублей не найдено ✅</p>';
+            }
+
+            // Комбо
+            const comboList = document.getElementById('comboList');
+            if (data.combo_clusters_sample && data.combo_clusters_sample.length > 0) {
+                comboList.innerHTML = data.combo_clusters_sample.map(combo => `
+                    <div class="bg-gray-700 rounded-lg p-4 mb-3">
+                        <div class="text-white font-semibold mb-2">
+                            ${combo.order_number} - ${combo.address}
+                        </div>
+                        <div class="space-y-1">
+                            ${combo.rows.map(row => `
+                                <div class="text-sm text-gray-300 bg-gray-600 rounded p-2">
+                                    ${translateWorkType(row.work_type)} | 
+                                    💰 ${row.payout ? row.payout.toFixed(2) + ' ₽' : '-'} | 
+                                    👤 ${row.worker_name || '-'}
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `).join('');
+            } else {
+                comboList.innerHTML = '<p class="text-gray-500">Комбо не найдено</p>';
+            }
+        }
+
+        function translateWorkType(type) {
+            const types = {
+                'diagnostic': '🔍 Диагностика',
+                'inspection': '👁️ Осмотр',
+                'installation': '🔧 Монтаж',
+                'other': '❓ Другое'
+            };
+            return types[type] || type;
+        }
+    </script>
+</body>
+</html>
+"""
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
@@ -58,7 +270,15 @@ class OrderRow(Base):
 # ========== Инициализация БД ==========
 @app.on_event("startup")
 def on_startup():
+    # Проверяем переменную окружения для сброса БД
+    if os.getenv("RESET_DB") == "true":
+        print("⚠️  RESET_DB=true - Удаление всех таблиц...")
+        Base.metadata.drop_all(bind=engine)
+        print("✅ Таблицы удалены")
+    
+    # Создаём таблицы заново
     Base.metadata.create_all(bind=engine)
+    print("✅ Таблицы созданы")
 
 # ========== Зависимость для БД ==========
 def get_db() -> Session:
@@ -121,6 +341,13 @@ def is_template_row(row: dict) -> bool:
     
     return False
 
+def normalize_text(text: str) -> str:
+    """Нормализация текста для сравнения"""
+    if not text:
+        return ""
+    # Убираем лишние пробелы, приводим к нижнему регистру
+    return " ".join(text.lower().strip().split())
+
 # ========== Аналитика дублей ==========
 def row_short(r: OrderRow) -> dict:
     return {
@@ -148,18 +375,24 @@ def analyze_duplicates_for_file(db: Session, file_id: int) -> dict:
     
     clusters = defaultdict(list)
     for r in all_orders:
-        key = (r.order_number.strip(), r.address.strip())
+        # ВАЖНО: нормализуем адрес для правильного сравнения
+        key = (
+            r.order_number.strip().upper(),
+            normalize_text(r.address)
+        )
         clusters[key].append(r)
     
     hard_duplicates = []
     combo_clusters = []
     clusters_with_multiple = []
     
-    for (order_number, address), rows in clusters.items():
+    for (order_number, normalized_address), rows in clusters.items():
         if len(rows) < 2:
             continue
         
-        clusters_with_multiple.append((order_number, address, rows))
+        # Берём оригинальный адрес из первой строки для отображения
+        original_address = rows[0].address
+        clusters_with_multiple.append((order_number, original_address, rows))
         
         by_type = defaultdict(list)
         has_diag_or_insp = False
@@ -177,7 +410,7 @@ def analyze_duplicates_for_file(db: Session, file_id: int) -> dict:
             if len(items) >= 2:
                 hard_duplicates.append({
                     "order_number": order_number,
-                    "address": address,
+                    "address": original_address,
                     "work_type": wt,
                     "rows": [row_short(r) for r in items],
                 })
@@ -186,7 +419,7 @@ def analyze_duplicates_for_file(db: Session, file_id: int) -> dict:
         if has_diag_or_insp and has_install:
             combo_clusters.append({
                 "order_number": order_number,
-                "address": address,
+                "address": original_address,
                 "rows": [row_short(r) for r in rows],
             })
     
@@ -199,9 +432,72 @@ def analyze_duplicates_for_file(db: Session, file_id: int) -> dict:
     }
 
 # ========== Эндпоинты ==========
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    """Главная страница с интерфейсом"""
+    return HTML_TEMPLATE
+
 @app.get("/ping")
 def ping():
     return {"status": "ok"}
+
+@app.post("/reset-database")
+async def reset_database(db: Session = Depends(get_db)):
+    """
+    ВНИМАНИЕ: Удаляет ВСЕ данные из базы!
+    Используйте с осторожностью.
+    """
+    try:
+        # Удаляем все записи
+        db.query(OrderRow).delete()
+        db.query(File).delete()
+        db.commit()
+        
+        return {
+            "message": "База данных успешно очищена",
+            "status": "success"
+        }
+    except Exception as e:
+        db.rollback()
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Ошибка при очистке БД: {str(e)}"}
+        )
+
+@app.get("/debug/orders/{file_id}")
+async def debug_orders(file_id: int, db: Session = Depends(get_db)):
+    """Посмотреть, как распарсились строки"""
+    orders = db.query(OrderRow).filter(OrderRow.file_id == file_id).limit(20).all()
+    
+    return {
+        "orders": [
+            {
+                "id": o.id,
+                "order_number": o.order_number,
+                "address": o.address[:50] if o.address else None,
+                "payout": o.payout,
+                "work_type": o.work_type,
+                "worker_name": o.worker_name,
+            }
+            for o in orders
+        ]
+    }
+
+@app.post("/debug/columns")
+async def debug_columns(file: UploadFile = FastAPIFile(...)):
+    """Посмотреть названия колонок в Excel"""
+    content = await file.read()
+    
+    try:
+        df = pd.read_excel(io.BytesIO(content), header=6)
+        df.columns = [str(col).strip() if col is not None else "" for col in df.columns]
+        
+        return {
+            "columns": list(df.columns),
+            "first_row_sample": df.iloc[0].to_dict() if len(df) > 0 else {}
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.post("/upload")
 async def upload_file(
@@ -414,15 +710,3 @@ async def upload_file(
         "hard_duplicates_sample": analysis["hard_duplicates_sample"],
         "combo_clusters_sample": analysis["combo_clusters_sample"],
     }
-
-@app.on_event("startup")
-def on_startup():
-    # Проверяем переменную окружения для сброса БД
-    if os.getenv("RESET_DB") == "true":
-        print("⚠️  RESET_DB=true - Удаление всех таблиц...")
-        Base.metadata.drop_all(bind=engine)
-        print("✅ Таблицы удалены")
-    
-    # Создаём таблицы заново
-    Base.metadata.create_all(bind=engine)
-    print("✅ Таблицы созданы")
