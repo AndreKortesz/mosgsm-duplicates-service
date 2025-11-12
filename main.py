@@ -66,7 +66,7 @@ class OrderRow(Base):
     comment = Column(Text)
     parsed_ok = Column(Boolean, default=False)
     is_problematic = Column(Boolean, default=False)
-    parse_errors = Column(Text)  # <-- НОВОЕ ПОЛЕ для ошибок парсинга
+    parse_errors = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
     file = relationship("File", back_populates="orders")
 
@@ -556,6 +556,7 @@ async def api_get_rows(
 async def api_delete_file(file_id: int, db: Session = Depends(get_db)):
     """Удалить файл и его записи"""
     db.query(OrderRow).filter(OrderRow.file_id == file_id).delete()
+    db.query(FileParseLog).filter(FileParseLog.file_id == file_id).delete()
     db.query(File).filter(File.id == file_id).delete()
     db.commit()
     return {"message": "File deleted successfully"}
@@ -666,7 +667,9 @@ async def upload_file(
     inserted_rows = 0
     problematic_rows = 0
     
-    # ========== ПОИСК КОЛОНОК ==========
+    # ========================================
+    # ПОИСК НУЖНЫХ КОЛОНОК
+    # ========================================
     
     print(f"\n{'='*60}")
     print(f"🔍 АНАЛИЗ СТРУКТУРЫ ФАЙЛА")
@@ -686,39 +689,28 @@ async def upload_file(
     worker_col = df.columns[0] if len(df.columns) > 0 else None
     print(f"✓ Колонка монтажника: [{0}] {worker_col}")
     
-    # 3. КОЛОНКА "ИТОГО" - основная сумма для анализа
+    # 3. Колонка "Итого"
     payout_col = None
-    payout_col_idx = None
-    
-    # Сначала ищем по названию (исключая "Выручка итого")
-    for idx, c in enumerate(df.columns):
-        name = str(c).strip().lower()
-        if "итого" in name and "выручка" not in name:
-            payout_col = c
-            payout_col_idx = idx
-            print(f"✓ Колонка 'Итого' найдена по имени: [{idx}] {c}")
+    for col_name in df.columns:
+        if "итого" in str(col_name).lower().strip() and "выручка" not in str(col_name).lower():
+            payout_col = col_name
+            print(f"✓ Колонка 'Итого' найдена по имени: [{df.columns.get_loc(col_name)}] {col_name}")
             break
     
-    # Если не нашли по имени, ищем по индексам (пробуем 16-20)
-    if payout_col is None:
-        for idx in [18, 17, 19, 16, 20, 15]:
-            if idx < len(df.columns):
-                col_name = str(df.columns[idx]).strip()
-                print(f"  Проверяем [{idx}]: {col_name}")
-                if "итого" in col_name.lower() and "выручка" not in col_name.lower():
-                    payout_col = df.columns[idx]
-                    payout_col_idx = idx
-                    print(f"✓ Колонка 'Итого' найдена по индексу: [{idx}] {df.columns[idx]}")
-                    break
-    
-    if payout_col is None:
-        print("⚠️ ВНИМАНИЕ: Колонка 'Итого' не найдена!")
-
     if payout_col is None:
         msg = "⚠️ ВНИМАНИЕ: Колонка 'Итого' не найдена!"
         print(msg)
         log_entry = FileParseLog(file_id=db_file.id, log_type="warning", message=msg)
         db.add(log_entry)
+    
+    # 4. Колонка "Диагностика"
+    diagnostic_col = None
+    for col_name in df.columns:
+        col_lower = str(col_name).lower().strip()
+        if "диагностика" in col_lower and "%" not in col_lower:
+            diagnostic_col = col_name
+            print(f"✓ Колонка 'Диагностика' найдена: [{df.columns.get_loc(col_name)}] {col_name}")
+            break
     
     if diagnostic_col is None:
         msg = "⚠️ ВНИМАНИЕ: Колонка 'Диагностика' не найдена!"
@@ -726,66 +718,21 @@ async def upload_file(
         log_entry = FileParseLog(file_id=db_file.id, log_type="warning", message=msg)
         db.add(log_entry)
     
+    # 5. Колонка "Выручка (выезд) специалиста"
+    inspection_col = None
+    for col_name in df.columns:
+        col_lower = str(col_name).lower().strip()
+        if ("выручка" in col_lower and "выезд" in col_lower) or \
+           ("выезд" in col_lower and "специалист" in col_lower):
+            inspection_col = col_name
+            print(f"✓ Колонка 'Выручка (выезд) специалиста' найдена: [{df.columns.get_loc(col_name)}] {col_name}")
+            break
+    
     if inspection_col is None:
         msg = "⚠️ ВНИМАНИЕ: Колонка 'Выручка (выезд) специалиста' не найдена!"
         print(msg)
         log_entry = FileParseLog(file_id=db_file.id, log_type="warning", message=msg)
         db.add(log_entry)
-    
-    # 4. КОЛОНКА "ДИАГНОСТИКА" или "ОПЛАТА ДИАГНОСТИКИ"
-    diagnostic_col = None
-    diagnostic_col_idx = None
-    
-    # Ищем по названию
-    for idx, c in enumerate(df.columns):
-        name = str(c).lower()
-        if "диагност" in name:
-            diagnostic_col = c
-            diagnostic_col_idx = idx
-            print(f"✓ Колонка диагностики: [{idx}] {c}")
-            break
-    
-    # Если не нашли, пробуем по индексам (обычно 4 или 5)
-    if diagnostic_col is None:
-        for idx in [4, 5, 3, 6]:
-            if idx < len(df.columns):
-                col_name = str(df.columns[idx]).lower()
-                if "диагност" in col_name:
-                    diagnostic_col = df.columns[idx]
-                    diagnostic_col_idx = idx
-                    print(f"✓ Колонка диагностики найдена по индексу: [{idx}] {df.columns[idx]}")
-                    break
-    
-    if diagnostic_col is None:
-        print("⚠️ ВНИМАНИЕ: Колонка 'Диагностика' не найдена!")
-    
-    # 5. КОЛОНКА "ВЫРУЧКА (ВЫЕЗД) СПЕЦИАЛИСТА"
-    inspection_col = None
-    inspection_col_idx = None
-    
-    # Ищем по названию
-    for idx, c in enumerate(df.columns):
-        name = str(c).lower()
-        # Ищем точное совпадение с "выезд" + "специалист"
-        if "выезд" in name and "специалист" in name:
-            inspection_col = c
-            inspection_col_idx = idx
-            print(f"✓ Колонка осмотра (выезд специалиста): [{idx}] {c}")
-            break
-    
-    # Если не нашли, пробуем по индексам (обычно 6 или 7)
-    if inspection_col is None:
-        for idx in [6, 7, 5, 8]:
-            if idx < len(df.columns):
-                col_name = str(df.columns[idx]).lower()
-                if "выезд" in col_name and "специалист" in col_name:
-                    inspection_col = df.columns[idx]
-                    inspection_col_idx = idx
-                    print(f"✓ Колонка осмотра найдена по индексу: [{idx}] {df.columns[idx]}")
-                    break
-    
-    if inspection_col is None:
-        print("⚠️ ВНИМАНИЕ: Колонка 'Выручка (выезд) специалиста' не найдена!")
     
     # 6. Колонка комментариев
     comment_col = None
@@ -803,7 +750,10 @@ async def upload_file(
     print(f"  - Осмотр (выезд): {'✓' if inspection_col else '✗'}")
     print(f"{'='*60}\n")
     
-    # Обрабатываем строки
+    # ========================================
+    # ОБРАБОТКА СТРОК
+    # ========================================
+    
     for idx, row in df.iterrows():
         total_rows += 1
         row_dict = row.to_dict()
@@ -826,15 +776,14 @@ async def upload_file(
         order_number = extract_order_number(text_cell)
         address = extract_address(text_cell)
         
+        # Извлечение суммы из "Итого"
         payout_val = None
         if payout_col is not None:
             raw = row.get(payout_col)
             if pd.notna(raw):
                 try:
                     if isinstance(raw, str):
-                        # Убираем все пробелы, заменяем запятую на точку
                         cleaned = str(raw).replace(" ", "").replace(",", ".").replace("\xa0", "")
-                        # Убираем все нечисловые символы кроме точки и минуса
                         cleaned = ''.join(c for c in cleaned if c.isdigit() or c in '.-')
                         if cleaned and cleaned not in ['.', '-', '-.']:
                             payout_val = float(cleaned)
@@ -843,17 +792,14 @@ async def upload_file(
                 except Exception as e:
                     print(f"  ⚠️ Ошибка парсинга суммы: {raw} -> {e}")
                     payout_val = None
-                    # Логируем ошибку в БД
-                    if 'db_file' in locals():
-                        log_entry = FileParseLog(
-                            file_id=db_file.id, 
-                            log_type="warning", 
-                            message=f"Не удалось распарсить сумму: {raw}"
-                        )
-                        db.add(log_entry)
+                    log_entry = FileParseLog(
+                        file_id=db_file.id, 
+                        log_type="warning", 
+                        message=f"Не удалось распарсить сумму: {raw}"
+                    )
+                    db.add(log_entry)
         
         # Суммы для определения типа работы
-# Суммы для определения типа работы
         diag_sum = 0.0
         if diagnostic_col is not None and pd.notna(row.get(diagnostic_col)):
             try:
@@ -953,12 +899,13 @@ async def upload_file(
         "total_rows_in_file": int(total_rows),
         "saved_rows": int(inserted_rows),
         "problematic_rows": int(problematic_rows),
-        "clusters_with_multiple_count": analysis["clusters_with_multiple_count"],
         "hard_duplicates_count": analysis["hard_duplicates_count"],
         "combo_clusters_count": analysis["combo_clusters_count"],
+        "needs_review_count": analysis["needs_review_count"],
         "problematic_count": analysis["problematic_count"],
         "hard_duplicates_sample": analysis["hard_duplicates_sample"],
         "combo_clusters_sample": analysis["combo_clusters_sample"],
+        "needs_review_sample": analysis["needs_review_sample"],
         "problematic_sample": analysis["problematic_sample"],
     }
 
@@ -1027,6 +974,7 @@ async def ui_admin(request: Request):
 async def admin_reset_soft(db: Session = Depends(get_db)):
     """Мягкий сброс - удаляет данные"""
     db.query(OrderRow).delete()
+    db.query(FileParseLog).delete()
     db.query(File).delete()
     db.commit()
     return {"message": "Все данные удалены"}
