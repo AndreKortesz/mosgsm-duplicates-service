@@ -245,7 +245,7 @@ async def upload_file(
 
     try:
         # ВАЖНО: указываем строку заголовков (6-я строка Excel => header=5)
-        df = pd.read_excel(io.BytesIO(content), header=5)
+        df = pd.read_excel(io.BytesIO(content), header=6)
     except Exception as e:
         return JSONResponse(
             status_code=400,
