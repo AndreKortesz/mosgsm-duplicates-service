@@ -754,6 +754,8 @@ async def upload_file(
     # ОБРАБОТКА СТРОК
     # ========================================
     
+    current_worker = None  # Текущий монтажник
+    
     for idx, row in df.iterrows():
         total_rows += 1
         row_dict = row.to_dict()
@@ -768,11 +770,14 @@ async def upload_file(
         if not text_cell:
             text_cell = " ".join([str(v) for v in row_dict.values() if pd.notna(v)])
         
-        # Если это заголовок монтажника - пропускаем
+        # НОВАЯ ЛОГИКА: Проверяем, является ли это заголовком монтажника
         if is_worker_header(text_cell):
-            print(f"⏭️  Пропущен заголовок монтажника: {text_cell}")
-            continue
+            # Это заголовок монтажника - запоминаем его
+            current_worker = text_cell.strip()
+            print(f"👷 МОНТАЖНИК: {current_worker}")
+            continue  # Пропускаем эту строку, не создаём заказ
         
+        # Извлекаем номер заказа и адрес
         order_number = extract_order_number(text_cell)
         address = extract_address(text_cell)
         
@@ -838,7 +843,7 @@ async def upload_file(
         if payout_val and payout_val > 0:
             print(f"  💵 Итого: {payout_val} ₽ (заказ: {order_number})")
         
-        # Определяем тип работы (ВАЖНО: порядок имеет значение!)
+        # Определяем тип работы
         work_type = "other"
         
         if diag_sum > 0:
@@ -853,11 +858,8 @@ async def upload_file(
         else:
             print(f"  ➜ Тип работы: ДРУГОЕ")
         
-        worker_name = None
-        if worker_col and pd.notna(row.get(worker_col)):
-            worker_name = str(row.get(worker_col)).strip()
-            if worker_name.lower() in ["монтажник", "исполнитель", "фио", ""]:
-                worker_name = None
+        # ВАЖНО: Используем current_worker вместо извлечения из ячейки
+        worker_name = current_worker
         
         comment_value = ""
         if comment_col and pd.notna(row.get(comment_col)):
@@ -871,13 +873,14 @@ async def upload_file(
             is_problematic = True
             parsed_ok = False
         
+        # ВАЖНО: raw_text теперь содержит ТОЛЬКО информацию о заказе
         order_row = OrderRow(
             file_id=db_file.id,
             raw_text=text_cell[:1000] if text_cell else "",
             order_number=order_number,
             address=address,
             payout=payout_val,
-            worker_name=worker_name,
+            worker_name=worker_name,  # <-- Теперь берётся из current_worker
             work_type=work_type,
             comment=comment_value,
             parsed_ok=parsed_ok,
@@ -887,6 +890,9 @@ async def upload_file(
         inserted_rows += 1
         if is_problematic:
             problematic_rows += 1
+        
+        # DEBUG: Показываем что сохранили
+        print(f"  💾 Сохранено: {order_number} | {worker_name} | {payout_val} ₽")
     
     db.commit()
     
