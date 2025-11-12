@@ -92,16 +92,36 @@ def extract_order_number(text: str) -> str | None:
     return m.group(0) if m else None
 
 def extract_address(text: str) -> str | None:
+    """
+    Улучшенный парсинг адреса из разных форматов:
+    1. "от ДД.ММ.ГГГГ ЧЧ:ММ:СС, адрес..."
+    2. "Заказ клиента КАУТ-ХХХХХХ от ДД.ММ.ГГГГ ЧЧ:ММ:СС, адрес..."
+    3. Просто адрес после запятой
+    """
     if not text:
         return None
     
+    # Паттерн 1: "от [дата] [время], [адрес]"
     match = re.search(r"от\s+\d{2}\.\d{2}\.\d{4}\s+[\d:]+,\s*(.+)$", text)
     if match:
-        return match.group(1).strip()
+        address = match.group(1).strip()
+        if len(address) > 5:
+            return address
     
+    # Паттерн 2: "от [дата] без времени, [адрес]"
     match = re.search(r"от\s+\d{2}\.\d{2}\.\d{4}[^,]*,\s*(.+)$", text)
     if match:
-        return match.group(1).strip()
+        address = match.group(1).strip()
+        if len(address) > 5:
+            return address
+    
+    # Паттерн 3: Если есть номер заказа, берём всё после запятой
+    if ORDER_NUMBER_REGEX.search(text):
+        parts = text.split(',')
+        if len(parts) >= 2:
+            address = ','.join(parts[1:]).strip()
+            if len(address) > 5 and not address.replace(' ', '').replace(':', '').replace('.', '').isdigit():
+                return address
     
     return None
 
@@ -120,6 +140,41 @@ def is_template_row(row: dict) -> bool:
     
     if not any(ch.isdigit() for ch in joined) and len(joined) < 10:
         return True
+    
+    return False
+
+def is_worker_header(text: str) -> bool:
+    """
+    Проверяет, является ли строка заголовком монтажника (ФИО).
+    Примеры: "Ветренко Дмитрий", "Викулин Андрей", "Гуляев Олег"
+    """
+    if not text:
+        return False
+    
+    text = text.strip()
+    
+    # Если в строке есть номер заказа - это не заголовок
+    if ORDER_NUMBER_REGEX.search(text):
+        return False
+    
+    # Если есть дата - это не заголовок
+    if re.search(r'\d{2}\.\d{2}\.\d{4}', text):
+        return False
+    
+    # Убираем пояснения в скобках типа "(оплата клиентом)"
+    text_clean = re.sub(r'\([^)]*\)', '', text).strip()
+    
+    # Разбиваем на слова
+    words = text_clean.split()
+    
+    # Если 2-3 слова, все начинаются с заглавной буквы, и нет цифр
+    if 2 <= len(words) <= 3:
+        all_capitalized = all(word[0].isupper() for word in words if word)
+        has_no_digits = not any(char.isdigit() for char in text_clean)
+        has_no_special = not any(char in text_clean for char in ['№', '/', '\\'])
+        
+        if all_capitalized and has_no_digits and has_no_special:
+            return True
     
     return False
 
@@ -199,7 +254,7 @@ def analyze_duplicates_for_file(db: Session, file_id: int) -> dict:
                 "rows": [row_short(r) for r in rows],
             })
     
-    # ВАЖНО: Добавляем проблемные строки
+    # Проблемные строки
     problematic_orders = (
         db.query(OrderRow)
         .filter(OrderRow.file_id == file_id, OrderRow.is_problematic == True)
@@ -341,7 +396,6 @@ async def api_export(
     else:
         return JSONResponse(status_code=400, content={"error": "Invalid export type"})
     
-    # Создаём CSV
     df = pd.DataFrame(data)
     output = io.StringIO()
     df.to_csv(output, index=False, encoding='utf-8-sig')
@@ -352,6 +406,27 @@ async def api_export(
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename={file.filename}_{what}.csv"}
     )
+
+@app.get("/debug/row/{row_id}")
+async def debug_row(row_id: int, db: Session = Depends(get_db)):
+    """Посмотреть детали одной строки"""
+    row = db.query(OrderRow).filter(OrderRow.id == row_id).first()
+    if not row:
+        return {"error": "Row not found"}
+    
+    return {
+        "id": row.id,
+        "file_id": row.file_id,
+        "raw_text": row.raw_text,
+        "order_number": row.order_number,
+        "address": row.address,
+        "payout": row.payout,
+        "worker_name": row.worker_name,
+        "work_type": row.work_type,
+        "comment": row.comment,
+        "parsed_ok": row.parsed_ok,
+        "is_problematic": row.is_problematic,
+    }
 
 @app.post("/upload")
 async def upload_file(
@@ -395,6 +470,10 @@ async def upload_file(
         if name == "Итого" or "итого" in name.lower():
             payout_col = c
             break
+    
+    # DEBUG: Вывод колонок
+    print(f"🔍 DEBUG: Найдена колонка Итого: {payout_col}")
+    print(f"🔍 DEBUG: Все колонки: {list(df.columns)}")
     
     worker_col = None
     for c in df.columns:
@@ -440,6 +519,11 @@ async def upload_file(
         
         if not text_cell:
             text_cell = " ".join([str(v) for v in row_dict.values() if pd.notna(v)])
+        
+        # Если это заголовок монтажника - пропускаем
+        if is_worker_header(text_cell):
+            print(f"⏭️  Пропущен заголовок монтажника: {text_cell}")
+            continue
         
         order_number = extract_order_number(text_cell)
         address = extract_address(text_cell)
@@ -491,9 +575,11 @@ async def upload_file(
         if comment_col and pd.notna(row.get(comment_col)):
             comment_value = str(row.get(comment_col)).strip()
         
-        # ВАЖНО: Проблемная строка если нет номера ИЛИ нет адреса
+        # Проверка на проблемную строку
         is_problematic = False
         parsed_ok = True
+        
+        # Если нет номера ИЛИ нет адреса - проблемная строка
         if not order_number or not address:
             is_problematic = True
             parsed_ok = False
@@ -605,4 +691,3 @@ async def admin_reset_hard(db: Session = Depends(get_db)):
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     return {"message": "База данных пересоздана"}
-
