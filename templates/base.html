@@ -16,10 +16,18 @@
                     <a href="/ui/dashboard" class="hover:opacity-80 transition-opacity">
                         <img src="/static/logo.png" alt="Mos-GSM" class="h-10 w-auto object-contain">
                     </a>
-                    <a href="/ui/dashboard" class="text-gray-300 hover:text-white transition-colors">Дашборд</a>
-                    <a href="/ui/files" class="text-gray-300 hover:text-white transition-colors">Файлы</a>
-                    <a href="/" class="text-gray-300 hover:text-white transition-colors">Загрузить</a>
-                    <a href="/admin/reset" class="text-gray-300 hover:text-white transition-colors">Сервис</a>
+                    <a href="/ui/dashboard" class="nav-link {% if request.path == '/ui/dashboard' %}nav-active{% endif %}">
+                        Дашборд
+                    </a>
+                    <a href="/ui/files" class="nav-link {% if request.path.startswith('/ui/files') %}nav-active{% endif %}">
+                        Файлы
+                    </a>
+                    <a href="/" class="nav-link {% if request.path == '/' %}nav-active{% endif %}">
+                        Загрузить
+                    </a>
+                    <a href="/admin/reset" class="nav-link {% if request.path == '/admin/reset' %}nav-active{% endif %}">
+                        Сервис
+                    </a>
                 </div>
             </div>
         </div>
@@ -36,5 +44,37 @@
             Mos-GSM Duplicate Checker © 2025
         </div>
     </footer>
+
+    <style>
+        /* Стили для навигации */
+        .nav-link {
+            position: relative;
+            padding: 0.5rem 0;
+            transition: color 0.2s;
+            color: #9CA3AF; /* gray-400 */
+        }
+        
+        .nav-link:hover {
+            color: #FFFFFF; /* white */
+        }
+        
+        /* Активная ссылка */
+        .nav-active {
+            color: #3B82F6; /* blue-500 */
+            font-weight: 600;
+        }
+        
+        /* Подчёркивание снизу для активной ссылки */
+        .nav-active::after {
+            content: '';
+            position: absolute;
+            bottom: -1.25rem;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: #3B82F6; /* blue-500 */
+            border-radius: 2px 2px 0 0;
+        }
+    </style>
 </body>
 </html>
