@@ -1,0 +1,232 @@
+{% extends "base.html" %}
+
+{% block title %}{{ file.filename }} - MOS-GSM{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto">
+    <!-- Шапка -->
+    <div class="flex justify-between items-center mb-6">
+        <div>
+            <a href="/ui/files" class="text-blue-400 hover:text-blue-300 text-sm mb-2 inline-block">← Назад к списку</a>
+            <h1 class="text-3xl font-bold">{{ file.filename }}</h1>
+            <p class="text-gray-400 text-sm">Загружен: {{ file.uploaded_at.strftime('%d.%m.%Y %H:%M') }}</p>
+        </div>
+        <button onclick="deleteFile()" class="bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors">
+            🗑 Удалить файл
+        </button>
+    </div>
+
+    <!-- Статистика -->
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+        <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+            <div class="text-gray-400 text-sm">Всего записей</div>
+            <div class="text-2xl font-bold text-white">{{ total_rows }}</div>
+        </div>
+        <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+            <div class="text-gray-400 text-sm">⚠️ Проблемных</div>
+            <div class="text-2xl font-bold text-yellow-400">{{ analysis.problematic_count }}</div>
+        </div>
+        <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+            <div class="text-gray-400 text-sm">🔴 Дублей</div>
+            <div class="text-2xl font-bold text-red-400">{{ analysis.hard_duplicates_count }}</div>
+        </div>
+        <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+            <div class="text-gray-400 text-sm">🟡 Комбо</div>
+            <div class="text-2xl font-bold text-yellow-400">{{ analysis.combo_clusters_count }}</div>
+        </div>
+        <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+            <div class="text-gray-400 text-sm">📊 Кластеров</div>
+            <div class="text-2xl font-bold text-blue-400">{{ analysis.clusters_with_multiple_count }}</div>
+        </div>
+    </div>
+
+    <!-- Табы -->
+    <div class="bg-gray-800 rounded-lg shadow-2xl border border-gray-700">
+        <!-- Навигация табов -->
+        <div class="border-b border-gray-700">
+            <nav class="flex space-x-4 px-6" role="tablist">
+                <button class="tab-btn py-4 px-4 font-semibold border-b-2 border-blue-500 text-blue-400" data-tab="problematic">
+                    ⚠️ Проблемные ({{ analysis.problematic_count }})
+                </button>
+                <button class="tab-btn py-4 px-4 font-semibold border-b-2 border-transparent text-gray-400 hover:text-white" data-tab="hard">
+                    🔴 Жёсткие дубли ({{ analysis.hard_duplicates_count }})
+                </button>
+                <button class="tab-btn py-4 px-4 font-semibold border-b-2 border-transparent text-gray-400 hover:text-white" data-tab="combo">
+                    🟡 Комбо ({{ analysis.combo_clusters_count }})
+                </button>
+            </nav>
+        </div>
+
+        <!-- Контент табов -->
+        <div class="p-6">
+            <!-- Таб: Проблемные -->
+            <div id="tab-problematic" class="tab-content">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-bold">Проблемные строки</h2>
+                    <a href="/api/files/{{ file_id }}/export/problematic" class="text-blue-400 hover:text-blue-300">📥 Экспорт CSV</a>
+                </div>
+                <p class="text-gray-400 mb-4 text-sm">Строки без номера заказа или адреса. Требуют проверки!</p>
+                
+                {% if analysis.problematic_sample %}
+                <div class="space-y-3">
+                    {% for row in analysis.problematic_sample %}
+                    <div class="bg-gray-700 rounded-lg p-4 border border-yellow-500/30">
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+                            <div>
+                                <span class="text-gray-400">Номер заказа:</span>
+                                <span class="text-white font-semibold">{{ row.order_number or '❌ Нет' }}</span>
+                            </div>
+                            <div>
+                                <span class="text-gray-400">Адрес:</span>
+                                <span class="text-white font-semibold">{{ row.address or '❌ Нет' }}</span>
+                            </div>
+                            <div>
+                                <span class="text-gray-400">Сумма:</span>
+                                <span class="text-green-400 font-semibold">{{ '{:,.2f}'.format(row.payout) if row.payout else '-' }} ₽</span>
+                            </div>
+                        </div>
+                        <div class="mt-2 text-gray-300 text-sm">
+                            <span class="text-gray-400">Исходный текст:</span> {{ row.raw_text or '-' }}
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <p class="text-gray-500 text-center py-8">✅ Проблемных строк не найдено</p>
+                {% endif %}
+            </div>
+
+            <!-- Таб: Жёсткие дубли -->
+            <div id="tab-hard" class="tab-content hidden">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-bold">Жёсткие дубли</h2>
+                    <a href="/api/files/{{ file_id }}/export/hard" class="text-blue-400 hover:text-blue-300">📥 Экспорт CSV</a>
+                </div>
+                <p class="text-gray-400 mb-4 text-sm">Одинаковый заказ + адрес + тип работы. Риск двойной оплаты!</p>
+                
+                {% if analysis.hard_duplicates_sample %}
+                <div class="space-y-4">
+                    {% for dup in analysis.hard_duplicates_sample %}
+                    <div class="bg-gray-700 rounded-lg p-4 border border-red-500/30">
+                        <div class="mb-3">
+                            <div class="font-bold text-white">{{ dup.order_number }}</div>
+                            <div class="text-gray-300 text-sm">{{ dup.address }}</div>
+                            <div class="text-gray-400 text-sm mt-1">Тип: 
+                                {% if dup.work_type == 'diagnostic' %}🔍 Диагностика
+                                {% elif dup.work_type == 'inspection' %}👁️ Осмотр
+                                {% elif dup.work_type == 'installation' %}🔧 Монтаж
+                                {% else %}❓ Другое{% endif %}
+                            </div>
+                        </div>
+                        <div class="space-y-2">
+                            {% for row in dup.rows %}
+                            <div class="bg-gray-600 rounded p-3 text-sm">
+                                <div class="flex justify-between">
+                                    <span class="text-white">👤 {{ row.worker_name or 'Не указан' }}</span>
+                                    <span class="text-green-400 font-bold">💰 {{ '{:,.2f}'.format(row.payout) if row.payout else '-' }} ₽</span>
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <p class="text-gray-500 text-center py-8">✅ Жёстких дублей не найдено</p>
+                {% endif %}
+            </div>
+
+            <!-- Таб: Комбо -->
+            <div id="tab-combo" class="tab-content hidden">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-bold">Комбо (осмотр + монтаж)</h2>
+                    <a href="/api/files/{{ file_id }}/export/combo" class="text-blue-400 hover:text-blue-300">📥 Экспорт CSV</a>
+                </div>
+                <p class="text-gray-400 mb-4 text-sm">Нормальные случаи: сначала осмотр/диагностика, потом монтаж</p>
+                
+                {% if analysis.combo_clusters_sample %}
+                <div class="space-y-4">
+                    {% for combo in analysis.combo_clusters_sample %}
+                    <div class="bg-gray-700 rounded-lg p-4 border border-yellow-500/30">
+                        <div class="mb-3">
+                            <div class="font-bold text-white">{{ combo.order_number }}</div>
+                            <div class="text-gray-300 text-sm">{{ combo.address }}</div>
+                        </div>
+                        <div class="space-y-2">
+                            {% for row in combo.rows %}
+                            <div class="bg-gray-600 rounded p-3 text-sm">
+                                <div class="flex justify-between items-center">
+                                    <div>
+                                        <span class="text-white">
+                                            {% if row.work_type == 'diagnostic' %}🔍 Диагностика
+                                            {% elif row.work_type == 'inspection' %}👁️ Осмотр
+                                            {% elif row.work_type == 'installation' %}🔧 Монтаж
+                                            {% else %}❓ Другое{% endif %}
+                                        </span>
+                                        <span class="text-gray-400 ml-2">| 👤 {{ row.worker_name or '-' }}</span>
+                                    </div>
+                                    <span class="text-green-400 font-bold">💰 {{ '{:,.2f}'.format(row.payout) if row.payout else '-' }} ₽</span>
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <p class="text-gray-500 text-center py-8">Комбо не найдено</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // Переключение табов
+    const tabBtns = document.querySelectorAll('.tab-btn');
+    const tabContents = document.querySelectorAll('.tab-content');
+
+    tabBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            const tabName = btn.dataset.tab;
+            
+            // Убираем активный класс со всех кнопок
+            tabBtns.forEach(b => {
+                b.classList.remove('border-blue-500', 'text-blue-400');
+                b.classList.add('border-transparent', 'text-gray-400');
+            });
+            
+            // Добавляем активный класс текущей кнопке
+            btn.classList.add('border-blue-500', 'text-blue-400');
+            btn.classList.remove('border-transparent', 'text-gray-400');
+            
+            // Скрываем все табы
+            tabContents.forEach(content => {
+                content.classList.add('hidden');
+            });
+            
+            // Показываем нужный таб
+            document.getElementById(`tab-${tabName}`).classList.remove('hidden');
+        });
+    });
+
+    async function deleteFile() {
+        if (!confirm('Удалить этот файл и все его записи?\n\nЭто действие необратимо!')) return;
+        
+        try {
+            const response = await fetch(`/api/files/{{ file_id }}`, {
+                method: 'DELETE'
+            });
+            
+            if (response.ok) {
+                alert('Файл удалён');
+                window.location.href = '/ui/files';
+            } else {
+                alert('Ошибка при удалении');
+            }
+        } catch (error) {
+            alert('Ошибка: ' + error.message);
+        }
+    }
+</script>
+{% endblock %}
