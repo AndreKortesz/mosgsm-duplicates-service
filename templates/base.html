@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}MOS-GSM Duplicate Checker{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen">
+    <!-- Навигация -->
+    <nav class="bg-gray-800 border-b border-gray-700">
+        <div class="container mx-auto px-4 py-4">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-8">
+                    <a href="/" class="text-xl font-bold text-blue-400">📊 MOS-GSM</a>
+                    <a href="/ui/files" class="text-gray-300 hover:text-white transition-colors">Файлы</a>
+                    <a href="/admin/reset" class="text-gray-300 hover:text-white transition-colors">Сервис</a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Контент -->
+    <main class="container mx-auto px-4 py-8">
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- Footer -->
+    <footer class="bg-gray-800 border-t border-gray-700 mt-12">
+        <div class="container mx-auto px-4 py-6 text-center text-gray-500 text-sm">
+            MOS-GSM Duplicate Checker © 2025
+        </div>
+    </footer>
+</body>
+</html>
