@@ -3,7 +3,6 @@ import io
 import re
 from datetime import datetime
 from collections import defaultdict
-
 import pandas as pd
 from fastapi import FastAPI, UploadFile, File as FastAPIFile, Depends
 from fastapi.responses import JSONResponse
@@ -21,7 +20,6 @@ from sqlalchemy import (
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship, Session
 
 # ========== Настройки приложения ==========
-
 app = FastAPI(title="MOS-GSM Duplicate Checker")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -32,52 +30,37 @@ engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-
 # ========== Модели БД ==========
-
 class File(Base):
     __tablename__ = "files"
-
     id = Column(Integer, primary_key=True, index=True)
     filename = Column(String, nullable=False)
     uploaded_at = Column(DateTime, default=datetime.utcnow)
-
     orders = relationship("OrderRow", back_populates="file")
-
 
 class OrderRow(Base):
     __tablename__ = "orders"
-
     id = Column(Integer, primary_key=True, index=True)
     file_id = Column(Integer, ForeignKey("files.id"), nullable=False)
-
-    raw_text = Column(Text)  # исходный текст строки/ячейки
+    raw_text = Column(Text)
     order_number = Column(String, index=True)
     order_date = Column(DateTime, nullable=True)
     address = Column(Text)
-
     payout = Column(Float)
     worker_name = Column(String)
-    work_type = Column(String)  # diagnostic / inspection / installation / other
+    work_type = Column(String)
     comment = Column(Text)
-
     parsed_ok = Column(Boolean, default=False)
     is_problematic = Column(Boolean, default=False)
-
     created_at = Column(DateTime, default=datetime.utcnow)
-
     file = relationship("File", back_populates="orders")
 
-
 # ========== Инициализация БД ==========
-
 @app.on_event("startup")
 def on_startup():
     Base.metadata.create_all(bind=engine)
 
-
 # ========== Зависимость для БД ==========
-
 def get_db() -> Session:
     db = SessionLocal()
     try:
@@ -85,11 +68,8 @@ def get_db() -> Session:
     finally:
         db.close()
 
-
 # ========== Парсинг ==========
-
 ORDER_NUMBER_REGEX = re.compile(r"\b[А-ЯA-Z]{2,5}-\d{5,7}\b")
-
 
 def extract_order_number(text: str) -> str | None:
     if not text:
@@ -97,49 +77,47 @@ def extract_order_number(text: str) -> str | None:
     m = ORDER_NUMBER_REGEX.search(text)
     return m.group(0) if m else None
 
-
 def extract_address(text: str) -> str | None:
     """
-    Черновой вариант:
-    - Ищем 'от ДД.ММ.ГГГГ' и берём всё после первой запятой.
-    - Если не нашли — возвращаем None (уйдет в проблемные).
+    Извлекаем адрес после даты и первой запятой.
+    Пример: "Заказ клиента КАУТ-001410 от 02.10.2025 17:13:20, 
+             МО, Дмитровский муниципальный округ, дер.Рождественно, 153 СВН"
+    Берём всё после ", " после даты.
     """
     if not text:
         return None
-
-    m = re.search(r"от\s+\d{2}\.\d{2}\.\d{4}[^,]*,(.+)$", text)
+    # Ищем дату формата ДД.ММ.ГГГГ ЧЧ:ММ:СС или ДД.ММ.ГГГГ
+    m = re.search(r"от\s+\d{2}\.\d{2}\.\d{4}[^,]*,\s*(.+)$", text)
     if m:
         return m.group(1).strip()
     return None
 
-
 def is_template_row(row: dict) -> bool:
     """
-    Фильтр шаблонных/служебных строк:
-    - Заголовки, общие подписи, пустые строки, итоги.
+    Фильтр шаблонных/служебных строк.
     """
     joined = " ".join([str(v) for v in row.values() if v is not None]).strip().lower()
-    if not joined:
+    if not joined or len(joined) < 5:
         return True
-
-    # Явные рабочие признаки — тогда НЕ шаблон
-    keywords = ["заказ", "клиент", "монтаж", "диагност", "выезд", "адрес", "сумма"]
-    if any(k in joined for k in keywords):
-        return False
-
-    # Строки типа "итого ..." считаем служебными
-    if joined.startswith("итого"):
+    
+    # Явные служебные строки
+    template_markers = [
+        "параметр периода",
+        "процент оплаты",
+        "процент выручки",
+        "монтажник",  # это заголовок
+    ]
+    for marker in template_markers:
+        if marker in joined:
+            return True
+    
+    # Строки итогов
+    if joined.startswith("итого") or "итого:" in joined:
         return True
-
-    # Если нет цифр и очень мало символов — мусор/шапка
-    if not any(ch.isdigit() for ch in joined) and len(joined) < 10:
-        return True
-
+    
     return False
 
-
 # ========== Аналитика дублей ==========
-
 def row_short(r: OrderRow) -> dict:
     return {
         "id": r.id,
@@ -151,15 +129,10 @@ def row_short(r: OrderRow) -> dict:
         "work_type": r.work_type,
     }
 
-
 def analyze_duplicates_for_file(db: Session, file_id: int) -> dict:
     """
-    - Кластеры по (order_number + address)
-    - Жесткие дубли: совпали order_number + address + work_type (2+ строк)
-    - Комбо: внутри кластера есть diagnostic/inspection + installation
-    Анализ по всей базе (чтобы видеть дубли между файлами).
+    Анализ дублей по всей базе.
     """
-
     all_orders: list[OrderRow] = (
         db.query(OrderRow)
         .filter(
@@ -181,13 +154,13 @@ def analyze_duplicates_for_file(db: Session, file_id: int) -> dict:
     for (order_number, address), rows in clusters.items():
         if len(rows) < 2:
             continue
-
+        
         clusters_with_multiple.append((order_number, address, rows))
-
+        
         by_type = defaultdict(list)
         has_diag_or_insp = False
         has_install = False
-
+        
         for r in rows:
             by_type[r.work_type].append(r)
             if r.work_type in ("diagnostic", "inspection"):
@@ -195,7 +168,7 @@ def analyze_duplicates_for_file(db: Session, file_id: int) -> dict:
             if r.work_type == "installation":
                 has_install = True
 
-        # Жесткие дубли: по одному work_type есть 2+ записей
+        # Жесткие дубли
         for wt, items in by_type.items():
             if len(items) >= 2:
                 hard_duplicates.append({
@@ -205,7 +178,7 @@ def analyze_duplicates_for_file(db: Session, file_id: int) -> dict:
                     "rows": [row_short(r) for r in items],
                 })
 
-        # Комбо: есть диагностика/осмотр + монтаж
+        # Комбо
         if has_diag_or_insp and has_install:
             combo_clusters.append({
                 "order_number": order_number,
@@ -221,13 +194,10 @@ def analyze_duplicates_for_file(db: Session, file_id: int) -> dict:
         "combo_clusters_sample": combo_clusters[:30],
     }
 
-
 # ========== Эндпоинты ==========
-
 @app.get("/ping")
 def ping():
     return {"status": "ok"}
-
 
 @app.post("/upload")
 async def upload_file(
@@ -235,24 +205,20 @@ async def upload_file(
     db: Session = Depends(get_db),
 ):
     """
-    1. Читаем Excel.
-    2. Создаем запись о файле.
-    3. Разбираем строки и сохраняем в orders.
-    4. Считаем дубли и комбинированные кейсы.
+    Загрузка и обработка Excel файла.
     """
-
     content = await file.read()
-
+    
     try:
-        # ВАЖНО: указываем строку заголовков (6-я строка Excel => header=5)
-        df = pd.read_excel(io.BytesIO(content), header=6)
+        # ИСПРАВЛЕНО: header=5 (строка 6 в Excel - там настоящие заголовки)
+        df = pd.read_excel(io.BytesIO(content), header=5)
     except Exception as e:
         return JSONResponse(
             status_code=400,
             content={"error": f"Не удалось прочитать Excel: {str(e)}"},
         )
 
-    # Файл
+    # Создаем запись о файле
     db_file = File(filename=file.filename)
     db.add(db_file)
     db.commit()
@@ -262,105 +228,94 @@ async def upload_file(
     inserted_rows = 0
     problematic_rows = 0
 
-    # Колонка заказа
-    possible_order_cols = [c for c in df.columns if "заказ" in str(c).lower()]
-    order_col = possible_order_cols[0] if possible_order_cols else None
-
-    # Колонка выплат: приоритет "Итого", потом "Сумма оплаты от услуг"
-    payout_col = None
-    for c in df.columns:
-        name = str(c).strip().lower()
-        if "итого" in name:
-            payout_col = c
+    # Поиск колонок (ищем точные совпадения или содержание ключевых слов)
+    columns_lower = {str(c).strip().lower(): c for c in df.columns}
+    
+    # Колонка с заказом и комментарием (там номер заказа + адрес)
+    order_col = None
+    for key in ["заказ, комментарий", "заказ", "комментарий"]:
+        if key in columns_lower:
+            order_col = columns_lower[key]
             break
-    if payout_col is None:
-        for c in df.columns:
-            name = str(c).strip().lower()
-            if "сумма оплаты от услуг" in name:
-                payout_col = c
-                break
-
-    # Колонка монтажника / исполнителя
-    worker_col = next(
-        (c for c in df.columns if "фио" in str(c).lower() or "монтажник" in str(c).lower()),
-        None,
-    )
-
-    # Колонка описания работ
-    name_col = next(
-        (c for c in df.columns if "наименование" in str(c).lower() or "вид работ" in str(c).lower()),
-        None,
-    )
-
-    # Комментарий
-    comment_col = next(
-        (c for c in df.columns if "коммент" in str(c).lower()),
-        None,
-    )
-
-    # Колонки для диагностики и выезда
-    diagnostic_col = next(
-        (c for c in df.columns if "диагност" in str(c).lower()),
-        None,
-    )
-    inspection_col = next(
-        (c for c in df.columns if "выручка (выезд) специалиста" in str(c).lower()
-         or "выезд специалиста" in str(c).lower()),
-        None,
-    )
+    
+    # Колонка "Итого" (приоритет)
+    payout_col = None
+    if "итого" in columns_lower:
+        payout_col = columns_lower["итого"]
+    elif "сумма оплаты от услуг" in columns_lower:
+        payout_col = columns_lower["сумма оплаты от услуг"]
+    
+    # Колонка с монтажником
+    worker_col = None
+    for key in ["монтажник", "фио"]:
+        if key in columns_lower:
+            worker_col = columns_lower[key]
+            break
+    
+    # Колонка диагностики
+    diagnostic_col = None
+    if "диагностика" in columns_lower:
+        diagnostic_col = columns_lower["диагностика"]
+    
+    # Колонка выручка (выезд) специалиста
+    inspection_col = None
+    for key in ["выручка (выезд) специалиста", "выезд специалиста"]:
+        if key in columns_lower:
+            inspection_col = columns_lower[key]
+            break
 
     for _, row in df.iterrows():
         total_rows += 1
         row_dict = row.to_dict()
 
-        # Служебные / пустые / итоговые строки — пропускаем
+        # Фильтр шаблонных строк
         if is_template_row(row_dict):
             continue
 
-        # Базовый текст для парсинга номера и адреса
-        if order_col and row.get(order_col) is not None and str(row.get(order_col)).strip():
-            text_cell = str(row.get(order_col))
-        else:
-            # если по какой-то причине нет колонки заказа, fallback
+        # Извлекаем текст из колонки "Заказ, Комментарий"
+        text_cell = ""
+        if order_col and pd.notna(row.get(order_col)):
+            text_cell = str(row.get(order_col)).strip()
+        
+        if not text_cell:
+            # Fallback на все ячейки
             text_cell = " ".join([str(v) for v in row_dict.values() if pd.notna(v)])
 
+        # Извлекаем номер заказа и адрес
         order_number = extract_order_number(text_cell)
         address = extract_address(text_cell)
 
-        # payout
+        # Выплата из колонки "Итого"
         payout_val = None
-        if payout_col is not None:
+        if payout_col is not None and pd.notna(row.get(payout_col)):
             raw = row.get(payout_col)
-            if pd.notna(raw):
-                try:
-                    if isinstance(raw, str):
-                        cleaned = raw.replace(" ", "").replace(",", ".")
-                        payout_val = float(cleaned)
-                    else:
-                        payout_val = float(raw)
-                except Exception:
-                    payout_val = None
+            try:
+                if isinstance(raw, str):
+                    cleaned = raw.replace(" ", "").replace(",", ".")
+                    payout_val = float(cleaned)
+                else:
+                    payout_val = float(raw)
+            except Exception:
+                payout_val = None
 
-        # суммы по диагностике и выезду
+        # Суммы по диагностике и выезду
         diag_sum = 0.0
         if diagnostic_col and pd.notna(row.get(diagnostic_col)):
             try:
-                diag_sum = float(str(row.get(diagnostic_col)).replace(" ", "").replace(",", "."))
+                val = str(row.get(diagnostic_col)).replace(" ", "").replace(",", ".")
+                diag_sum = float(val)
             except Exception:
                 diag_sum = 0.0
 
         insp_sum = 0.0
         if inspection_col and pd.notna(row.get(inspection_col)):
             try:
-                insp_sum = float(str(row.get(inspection_col)).replace(" ", "").replace(",", "."))
+                val = str(row.get(inspection_col)).replace(" ", "").replace(",", ".")
+                insp_sum = float(val)
             except Exception:
                 insp_sum = 0.0
 
-        # Тип работы:
-        # - любая ненулевая диагностика -> diagnostic
-        # - ненулевая выручка выезда -> inspection
-        # - payout > 5000 -> installation
-        # - иначе other
+        # Определяем тип работы
         if diag_sum > 0:
             work_type = "diagnostic"
         elif insp_sum > 0:
@@ -370,18 +325,12 @@ async def upload_file(
         else:
             work_type = "other"
 
-        worker_name = (
-            str(row.get(worker_col))
-            if worker_col and pd.notna(row.get(worker_col))
-            else None
-        )
-        comment_value = (
-            str(row.get(comment_col))
-            if comment_col and pd.notna(row.get(comment_col))
-            else ""
-        )
+        # ФИО монтажника
+        worker_name = None
+        if worker_col and pd.notna(row.get(worker_col)):
+            worker_name = str(row.get(worker_col)).strip()
 
-        # Проблемная строка: нет и номера, и адреса (кроме шаблонов, их уже отсекли)
+        # Проблемная строка
         is_problematic = False
         parsed_ok = True
         if not order_number and not address:
@@ -396,18 +345,19 @@ async def upload_file(
             payout=payout_val,
             worker_name=worker_name,
             work_type=work_type,
-            comment=comment_value,
+            comment="",
             parsed_ok=parsed_ok,
             is_problematic=is_problematic,
         )
         db.add(order_row)
         inserted_rows += 1
-
+        
         if is_problematic:
             problematic_rows += 1
 
     db.commit()
 
+    # Анализ дублей
     analysis = analyze_duplicates_for_file(db, db_file.id)
 
     return {
@@ -423,3 +373,13 @@ async def upload_file(
         "hard_duplicates_sample": analysis["hard_duplicates_sample"],
         "combo_clusters_sample": analysis["combo_clusters_sample"],
     }
+
+@app.post("/reset-database")
+def reset_database(db: Session = Depends(get_db)):
+    """ВНИМАНИЕ: Удаляет все данные!"""
+    try:
+        Base.metadata.drop_all(bind=engine)
+        Base.metadata.create_all(bind=engine)
+        return {"message": "База данных успешно сброшена"}
+    except Exception as e:
+        return {"error": str(e)}
