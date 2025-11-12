@@ -373,13 +373,4 @@ async def upload_file(
         "hard_duplicates_sample": analysis["hard_duplicates_sample"],
         "combo_clusters_sample": analysis["combo_clusters_sample"],
     }
-
-@app.post("/reset-database")
-def reset_database(db: Session = Depends(get_db)):
-    """ВНИМАНИЕ: Удаляет все данные!"""
-    try:
-        Base.metadata.drop_all(bind=engine)
-        Base.metadata.create_all(bind=engine)
-        return {"message": "База данных успешно сброшена"}
-    except Exception as e:
-        return {"error": str(e)}
+    
