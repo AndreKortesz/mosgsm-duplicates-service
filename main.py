@@ -944,6 +944,11 @@ async def ui_home(request: Request):
     """Главная страница - загрузка файла"""
     return templates.TemplateResponse("upload.html", {"request": request})
 
+@app.get("/ui/dashboard", response_class=HTMLResponse)
+async def ui_dashboard(request: Request):
+    """Общий дашборд по всем файлам"""
+    return templates.TemplateResponse("dashboard.html", {"request": request})
+
 @app.get("/ui/files", response_class=HTMLResponse)
 async def ui_files_list(request: Request, db: Session = Depends(get_db)):
     """Список всех файлов"""
