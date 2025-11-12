@@ -1,0 +1,339 @@
+{% extends "base.html" %}
+
+{% block title %}Общий дашборд - MOS-GSM{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto">
+    <div class="flex justify-between items-center mb-6">
+        <h1 class="text-3xl font-bold">📊 Общий дашборд</h1>
+        <div class="space-x-4">
+            <a href="/" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors">
+                + Загрузить файл
+            </a>
+            <a href="/ui/files" class="bg-gray-700 hover:bg-gray-600 text-white font-semibold py-2 px-4 rounded-lg transition-colors">
+                📁 Все файлы
+            </a>
+        </div>
+    </div>
+
+    <!-- Поисковик -->
+    <div class="bg-gray-800 rounded-lg shadow-2xl p-6 mb-6 border border-gray-700">
+        <h2 class="text-xl font-semibold text-white mb-4">🔍 Поиск по всем файлам</h2>
+        <form id="searchForm" class="flex gap-4">
+            <input 
+                type="text" 
+                id="searchInput" 
+                placeholder="Введите номер заказа, адрес, сумму или любое слово..."
+                class="flex-1 bg-gray-700 text-white rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                required
+            >
+            <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded-lg transition-colors">
+                Искать
+            </button>
+        </form>
+        <div id="searchResults" class="mt-4 hidden"></div>
+    </div>
+
+    <!-- Общая статистика -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+            <div class="text-gray-400 text-sm">Всего файлов</div>
+            <div class="text-2xl font-bold text-white" id="totalFiles">-</div>
+        </div>
+        <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+            <div class="text-gray-400 text-sm">Всего записей</div>
+            <div class="text-2xl font-bold text-green-400" id="totalOrders">-</div>
+        </div>
+        <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+            <div class="text-gray-400 text-sm">⚠️ Проблемных</div>
+            <div class="text-2xl font-bold text-yellow-400" id="problematicCount">-</div>
+        </div>
+        <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+            <div class="text-gray-400 text-sm">🔴 Дублей</div>
+            <div class="text-2xl font-bold text-red-400" id="duplicatesCount">-</div>
+        </div>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+        <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+            <div class="text-gray-400 text-sm">🟡 Комбо</div>
+            <div class="text-2xl font-bold text-yellow-400" id="comboCount">-</div>
+        </div>
+        <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+            <div class="text-gray-400 text-sm">🔵 Требует проверки</div>
+            <div class="text-2xl font-bold text-blue-400" id="reviewCount">-</div>
+        </div>
+    </div>
+
+    <!-- Табы -->
+    <div class="bg-gray-800 rounded-lg shadow-2xl border border-gray-700">
+        <div class="border-b border-gray-700">
+            <nav class="flex space-x-4 px-6" role="tablist">
+                <button class="tab-btn py-4 px-4 font-semibold border-b-2 border-blue-500 text-blue-400" data-tab="duplicates">
+                    🔴 Дубли
+                </button>
+                <button class="tab-btn py-4 px-4 font-semibold border-b-2 border-transparent text-gray-400 hover:text-white" data-tab="combo">
+                    🟡 Комбо
+                </button>
+                <button class="tab-btn py-4 px-4 font-semibold border-b-2 border-transparent text-gray-400 hover:text-white" data-tab="review">
+                    🔵 Требует проверки
+                </button>
+                <button class="tab-btn py-4 px-4 font-semibold border-b-2 border-transparent text-gray-400 hover:text-white" data-tab="problematic">
+                    ⚠️ Проблемные
+                </button>
+            </nav>
+        </div>
+
+        <div class="p-6">
+            <div id="tab-duplicates" class="tab-content"></div>
+            <div id="tab-combo" class="tab-content hidden"></div>
+            <div id="tab-review" class="tab-content hidden"></div>
+            <div id="tab-problematic" class="tab-content hidden"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // Загрузка данных дашборда
+    async function loadDashboard() {
+        try {
+            const response = await fetch('/api/dashboard/all');
+            const data = await response.json();
+            
+            document.getElementById('totalFiles').textContent = data.total_files;
+            document.getElementById('totalOrders').textContent = data.total_orders;
+            document.getElementById('problematicCount').textContent = data.problematic_count;
+            document.getElementById('duplicatesCount').textContent = data.hard_duplicates_count;
+            document.getElementById('comboCount').textContent = data.combo_clusters_count;
+            document.getElementById('reviewCount').textContent = data.needs_review_count;
+            
+            displayDuplicates(data.analysis.hard_duplicates_sample);
+            displayCombo(data.analysis.combo_clusters_sample);
+            displayReview(data.analysis.needs_review_sample);
+            displayProblematic(data.analysis.problematic_sample);
+        } catch (error) {
+            console.error('Ошибка загрузки дашборда:', error);
+        }
+    }
+
+    function displayDuplicates(duplicates) {
+        const container = document.getElementById('tab-duplicates');
+        if (!duplicates || duplicates.length === 0) {
+            container.innerHTML = '<p class="text-gray-500 text-center py-8">✅ Жёстких дублей не найдено</p>';
+            return;
+        }
+        
+        container.innerHTML = duplicates.map(dup => `
+            <div class="bg-gray-700 rounded-lg p-4 mb-3 border border-red-500/30">
+                <div class="mb-3">
+                    <div class="font-bold text-white">${dup.order_number}</div>
+                    <div class="text-gray-300 text-sm">${dup.address}</div>
+                    <div class="text-gray-400 text-sm mt-1">Тип: ${translateWorkType(dup.work_type)}</div>
+                </div>
+                <div class="space-y-2">
+                    ${dup.rows.map(row => `
+                        <div class="bg-gray-600 rounded p-3 text-sm">
+                            <div class="flex justify-between items-center">
+                                <div>
+                                    <span class="text-white">👤 ${row.worker_name || 'Не указан'}</span>
+                                    <span class="text-gray-400 ml-2">| Файл ID: ${row.file_id}</span>
+                                </div>
+                                <span class="text-green-400 font-bold">💰 ${row.payout ? row.payout.toFixed(2) + ' ₽' : '-'}</span>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+        `).join('');
+    }
+
+    function displayCombo(combos) {
+        const container = document.getElementById('tab-combo');
+        if (!combos || combos.length === 0) {
+            container.innerHTML = '<p class="text-gray-500 text-center py-8">Комбо не найдено</p>';
+            return;
+        }
+        
+        container.innerHTML = combos.map(combo => `
+            <div class="bg-gray-700 rounded-lg p-4 mb-3 border border-yellow-500/30">
+                <div class="mb-3">
+                    <div class="text-gray-300 text-sm font-semibold">${combo.address}</div>
+                    ${combo.order_numbers.length > 0 ? `
+                        <div class="text-gray-400 text-sm">Заказы: ${combo.order_numbers.join(', ')}</div>
+                    ` : ''}
+                </div>
+                <div class="space-y-2">
+                    ${combo.rows.map(row => `
+                        <div class="bg-gray-600 rounded p-3 text-sm">
+                            <div class="flex justify-between items-center">
+                                <div>
+                                    <span class="text-white">${translateWorkType(row.work_type)}</span>
+                                    <span class="text-gray-400 ml-2">| 👤 ${row.worker_name || '-'}</span>
+                                    <span class="text-gray-400 ml-2">| Заказ: ${row.order_number || '❌ Нет'}</span>
+                                    <span class="text-gray-400 ml-2">| Файл: ${row.file_id}</span>
+                                </div>
+                                <span class="text-green-400 font-bold">💰 ${row.payout ? row.payout.toFixed(2) + ' ₽' : '-'}</span>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+        `).join('');
+    }
+
+    function displayReview(reviews) {
+        const container = document.getElementById('tab-review');
+        if (!reviews || reviews.length === 0) {
+            container.innerHTML = '<p class="text-gray-500 text-center py-8">✅ Заказов требующих проверки не найдено</p>';
+            return;
+        }
+        
+        container.innerHTML = reviews.map(review => `
+            <div class="bg-gray-700 rounded-lg p-4 mb-3 border border-blue-500/30">
+                <div class="mb-3">
+                    <div class="font-bold text-white">Заказ: ${review.order_number}</div>
+                    <div class="text-yellow-400 text-sm">⚠️ Разные адреса для одного заказа!</div>
+                    <div class="text-gray-400 text-sm mt-2">Адреса:</div>
+                    <ul class="list-disc list-inside text-gray-300 text-sm ml-4">
+                        ${review.addresses.map(addr => `<li>${addr}</li>`).join('')}
+                    </ul>
+                </div>
+                <div class="space-y-2">
+                    ${review.rows.map(row => `
+                        <div class="bg-gray-600 rounded p-3 text-sm">
+                            <div class="flex justify-between items-center">
+                                <div>
+                                    <span class="text-white">📍 ${row.address || '❌ Нет'}</span>
+                                    <span class="text-gray-400 ml-2">| 👤 ${row.worker_name || '-'}</span>
+                                    <span class="text-gray-400 ml-2">| Файл: ${row.file_id}</span>
+                                </div>
+                                <span class="text-green-400 font-bold">💰 ${row.payout ? row.payout.toFixed(2) + ' ₽' : '-'}</span>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+        `).join('');
+    }
+
+    function displayProblematic(problematic) {
+        const container = document.getElementById('tab-problematic');
+        if (!problematic || problematic.length === 0) {
+            container.innerHTML = '<p class="text-gray-500 text-center py-8">✅ Проблемных строк не найдено</p>';
+            return;
+        }
+        
+        container.innerHTML = problematic.map(row => `
+            <div class="bg-gray-700 rounded-lg p-4 mb-3 border border-yellow-500/30">
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+                    <div>
+                        <span class="text-gray-400">Номер заказа:</span>
+                        <span class="text-white font-semibold">${row.order_number || '❌ Нет'}</span>
+                    </div>
+                    <div>
+                        <span class="text-gray-400">Адрес:</span>
+                        <span class="text-white font-semibold">${row.address || '❌ Нет'}</span>
+                    </div>
+                    <div>
+                        <span class="text-gray-400">Сумма:</span>
+                        <span class="text-green-400 font-semibold">${row.payout ? row.payout.toFixed(2) + ' ₽' : '-'}</span>
+                    </div>
+                </div>
+                <div class="mt-2 text-gray-300 text-sm">
+                    <span class="text-gray-400">👤 Монтажник:</span> ${row.worker_name || '-'}
+                    <span class="text-gray-400 ml-4">| Файл ID:</span> ${row.file_id}
+                </div>
+                <div class="mt-2 text-gray-300 text-sm">
+                    <span class="text-gray-400">Исходный текст:</span> ${row.raw_text || '-'}
+                </div>
+            </div>
+        `).join('');
+    }
+
+    // Поиск
+    document.getElementById('searchForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const query = document.getElementById('searchInput').value;
+        const resultsDiv = document.getElementById('searchResults');
+        
+        resultsDiv.innerHTML = '<p class="text-gray-400">Поиск...</p>';
+        resultsDiv.classList.remove('hidden');
+        
+        try {
+            const response = await fetch(`/api/search?query=${encodeURIComponent(query)}`);
+            const data = await response.json();
+            
+            if (data.total === 0) {
+                resultsDiv.innerHTML = '<p class="text-gray-500">Ничего не найдено</p>';
+                return;
+            }
+            
+            resultsDiv.innerHTML = `
+                <div class="bg-gray-700 rounded-lg p-4">
+                    <p class="text-white font-semibold mb-4">Найдено: ${data.total} записей</p>
+                    ${data.by_file.map(fileGroup => `
+                        <div class="mb-4">
+                            <div class="text-blue-400 font-semibold mb-2">
+                                📁 ${fileGroup.file.filename} (${fileGroup.file.uploaded_at})
+                            </div>
+                            <div class="space-y-2">
+                                ${fileGroup.results.map(row => `
+                                    <div class="bg-gray-600 rounded p-3 text-sm">
+                                        <div class="text-white">
+                                            ${row.order_number || '❌ Нет заказа'} | ${row.address || '❌ Нет адреса'}
+                                        </div>
+                                        <div class="text-gray-400">
+                                            👤 ${row.worker_name || '-'} | 
+                                            💰 ${row.payout ? row.payout.toFixed(2) + ' ₽' : '-'} |
+                                            ${translateWorkType(row.work_type)}
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+        } catch (error) {
+            resultsDiv.innerHTML = '<p class="text-red-400">Ошибка поиска</p>';
+        }
+    });
+
+    // Переключение табов
+    const tabBtns = document.querySelectorAll('.tab-btn');
+    const tabContents = document.querySelectorAll('.tab-content');
+
+    tabBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            const tabName = btn.dataset.tab;
+            
+            tabBtns.forEach(b => {
+                b.classList.remove('border-blue-500', 'text-blue-400');
+                b.classList.add('border-transparent', 'text-gray-400');
+            });
+            
+            btn.classList.add('border-blue-500', 'text-blue-400');
+            btn.classList.remove('border-transparent', 'text-gray-400');
+            
+            tabContents.forEach(content => {
+                content.classList.add('hidden');
+            });
+            
+            document.getElementById(`tab-${tabName}`).classList.remove('hidden');
+        });
+    });
+
+    function translateWorkType(type) {
+        const types = {
+            'diagnostic': '🔍 Диагностика',
+            'inspection': '👁️ Осмотр',
+            'installation': '🔧 Монтаж',
+            'other': '❓ Другое'
+        };
+        return types[type] || type;
+    }
+
+    // Загружаем данные при загрузке страницы
+    loadDashboard();
+</script>
+{% endblock %}
